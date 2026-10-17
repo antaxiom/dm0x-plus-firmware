@@ -23,6 +23,3 @@ Scope: documented behavior only. No analysis of vendor binaries or installer int
 - DM01 controller MCU part number (not found in public sources so far).
 - Which of the three error conditions causes the rollback refusal. Best route: ask ToSeven support or Discord, or test on a sacrificial unit.
 - Whether ToSeven publishes any developer or SDK documentation for the IAP protocol.
-
-## Other
-- `analysis/` (untracked) holds a scratch extraction made earlier. It should be deleted and is not part of the project.

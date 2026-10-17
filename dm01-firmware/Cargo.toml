@@ -1,12 +1,17 @@
 [package]
 name = "dm01-firmware"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
-description = "Clean-room user-configurable firmware control logic for the ToSeven DM01 mid-drive motor"
+description = "Functionally identical Rust firmware recompilation and .Pack tooling for ToSeven DM01 & DM02 mid-drive motors (V6510C)"
 
 [lib]
 name = "dm01_firmware"
 path = "src/lib.rs"
+
+[[bin]]
+name = "toseven_pack"
+path = "src/bin/toseven_pack.rs"
+required-features = ["std"]
 
 [features]
 default = ["std"]

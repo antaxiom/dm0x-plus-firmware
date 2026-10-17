@@ -1,3 +1,10 @@
+//! # Battery Calibration Curve & Low-Voltage Cushion (`V6510C`)
+//!
+//! Implements the 6-point voltage-to-SoC calibration curve, transient sag filtering,
+//! and the decompiled `V6510C` 3.0V low-voltage reserve cushion (`0x08005478`).
+
+use crate::power_curve::apply_lvc_cushion_da;
+
 /// Standard nominal battery voltage presets supported by the display and controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatteryPreset {
@@ -61,6 +68,14 @@ impl BatteryCalibrationCurve {
 
         0
     }
+}
+
+/// Applies the `V6510C` 3.0V Low-Voltage Cushion (`0x08005478`) to a current target in milliamps.
+pub const fn apply_lvc_cushion_ma(current_ma: u32, battery_mv: u32, low_cut_mv: u32) -> u32 {
+    let current_da = (current_ma / 100) as u16;
+    let bat_dv = (battery_mv / 100) as u16;
+    let lvc_dv = (low_cut_mv / 100) as u16;
+    (apply_lvc_cushion_da(current_da, bat_dv, lvc_dv) as u32) * 100
 }
 
 /// Battery telemetry filter that smooths transient voltage sag under load and tracks low-voltage cutoff hysteresis.
@@ -127,17 +142,13 @@ mod tests {
     #[test]
     fn test_low_voltage_debounce_and_recovery() {
         let mut mon = BatteryMonitor::new(BatteryPreset::V48, 48_000);
-        // Brief 200ms sag below 39V should not trip cutoff
         mon.update(38_000, 39_000, 200);
         assert!(!mon.low_voltage_tripped);
 
-        // Sustained 600ms sag below 39V trips cutoff
         mon.update(38_000, 39_000, 400);
         assert!(mon.low_voltage_tripped);
 
-        // Rebounding above 40.5V clears cutoff
         mon.update(41_000, 39_000, 100);
         assert!(!mon.low_voltage_tripped);
     }
 }
-

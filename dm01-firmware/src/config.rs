@@ -1,3 +1,10 @@
+//! # Motor & Display Configuration Tables (`DM01` & `DM02`)
+//!
+//! Defines the complete configuration parameters for ToSeven DM01 (`TS1000W`) and DM02 (`TS500W`)
+//! mid-drive motors and DM0X displays (`T24`, `T154`, `M15`, `LCD135C`).
+
+use crate::eeprom::EepromImage;
+
 /// Maximum number of configurable assist levels supported by the display/controller (`1..=8`).
 pub const MAX_ASSIST_LEVELS: usize = 8;
 
@@ -84,9 +91,9 @@ pub enum OverTempMode {
 pub struct AssistLevelConfig {
     /// Target speed limit in 0.1 km/h units (e.g., 250 = 25.0 km/h).
     pub speed_limit_deci_kph: u16,
-    /// Current limit percentage (`0..=100%`) of the maximum allowable working current.
+    /// Current limit percentage (`0..=100%`) applied to PAS and Throttle (`Pwr[level]`).
     pub power_percent: u8,
-    /// EAssist factor (`0..=100%`) governing torque sensor sensitivity per level.
+    /// EAssist factor (`0..=100%`) applied to Torque Sensor sensitivity (`EAssist[level]`).
     pub eassist_percent: u8,
 }
 
@@ -95,7 +102,7 @@ pub struct AssistLevelConfig {
 pub struct MotorHardwareConfig {
     pub gear: MotorGearType,
     pub pole_pairs: u8,
-    /// Reduction ratio scaled by 100 (DM01 = 4027 for 40.27:1).
+    /// Reduction ratio scaled by 100 (DM01 = 4027 for 40.27:1, DM02 = 5300 for 53.00:1).
     pub reduction_ratio_x100: u16,
     /// Hall installation angle error in degrees (`-30..=30`).
     pub angle_offset_deg: i8,
@@ -138,7 +145,7 @@ pub struct FocSpecialConfig {
     pub flux_weak_current_a: u8,
 }
 
-/// Complete stock parameter set for the DM01 controller matching the official manuals.
+/// Complete parameter set for the DM01 / DM02 controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MotorConfig {
     /// Number of active assist levels (`1..=8`, factory default 5).
@@ -147,7 +154,7 @@ pub struct MotorConfig {
     pub slide_bike_enabled: bool,
     pub levels: [AssistLevelConfig; MAX_ASSIST_LEVELS],
 
-    /// Controller current limits (`5A..=50A`, Page 11 of T24 Manual).
+    /// Controller current limits (`5A..=40A` in mA; V6510C DM01 defaults: 10A Eco, 18A City, 30A Sport).
     pub max_current_eco_ma: u32,
     pub max_current_city_ma: u32,
     pub max_current_sport_ma: u32,
@@ -168,27 +175,27 @@ pub struct MotorConfig {
     pub motor_hw: MotorHardwareConfig,
     pub foc_config: FocSpecialConfig,
 
-    /// Torque Sensor parameters (Page 13-14 of T24 Manual).
+    /// Torque Sensor parameters (Page 13-14 of T24 Manual & V6510C binary).
     pub torque_sensor_enabled: bool,
     pub torque_mode: TorqueMode,
-    /// Zero point voltage (`100..=2000 mV`, default `700 mV`).
+    /// Zero point voltage (`400..=1000 mV`, default `700 mV`).
     pub torque_zero_vol_mv: u16,
     /// Maximum output voltage (`1000..=3300 mV`, default `3300 mV`).
     pub torque_max_vol_mv: u16,
-    /// Net starting voltage (`200..=2000 mV`, default `200 mV`).
+    /// Net starting voltage (`50..=2000 mV`, V6510C default `50 mV`).
     pub torque_startup_net_vol_mv: u16,
     /// Keep angle (`0..=180` degrees).
     pub torque_keep_angle_deg: u8,
-    /// Minimum current bias (`0..=10 A`, in mA).
+    /// Starting current offset (`CurrentOffset`, V6510C default `500 mA = 0.5 A`).
     pub torque_min_out_current_ma: u32,
-    /// Torque sensor smooth signal filter (`0..=10`).
+    /// Torque sensor smooth signal filter (`0..=10`, default `5`).
     pub torque_filter: u8,
-    /// Assist strength = electric power / manpower (`0..=10`).
+    /// Assist strength (`0..=10`, default `10`).
     pub torque_strength_value: u8,
-    /// Torque keep time in ms (default `2000 ms`).
+    /// Torque keep time in ms (default `200 ms`).
     pub torque_keep_time_ms: u16,
 
-    /// PAS parameters (Page 12-13 of T24 Manual).
+    /// PAS parameters (Page 12-13 of T24 Manual & V6510C binary).
     pub pas_type: PasType,
     /// PAS magnet count (`3..=64`).
     pub pas_magnic_count: u8,
@@ -196,11 +203,12 @@ pub struct MotorConfig {
     pub pas_startup_count: u8,
     /// Smooth speed filter (`1..=3`).
     pub pas_filter_count: u8,
-    /// KeepTime (`200..=1000 ms`, default `600 ms`).
+    /// KeepTime (`200..=1000 ms`, default `300 ms`).
     pub pas_keep_time_ms: u16,
-    /// Maximum cadence speed (`60..=200 rpm`, DM01 default `160 rpm`).
+    /// Reference cadence speed (`PAS_MaxSpeed`, V6510C default `60 rpm`).
     pub pas_max_speed_rpm: u16,
     pub pas_control_mode: PasControlMode,
+    /// PAS starting current offset (`PAS_CurrentOffset`, V6510C default `1000 mA = 1.0 A`).
     pub pas_current_offset_ma: u32,
 
     /// Throttle parameters (Page 13 of T24 Manual).
@@ -215,7 +223,7 @@ pub struct MotorConfig {
     pub shift_delay_ms: u16,
     pub shift_power_percent: u8,
 
-    /// TemperatureSensor parameters (Page 14 of T24 Manual).
+    /// TemperatureSensor parameters (Page 14 of T24 Manual & V6510C linear rollback).
     pub temp_ctl_enabled: bool,
     pub temp_ctl_over_mode: OverTempMode,
     pub temp_ctl_min_c: i16,
@@ -228,8 +236,15 @@ pub struct MotorConfig {
 }
 
 impl Default for MotorConfig {
-    /// Official DM01 48V (1000W) stock factory configuration.
+    /// Returns the DM01 (`TS1000W`) `V6510C` factory configuration.
     fn default() -> Self {
+        Self::default_dm01()
+    }
+}
+
+impl MotorConfig {
+    /// Exact factory default configuration for the ToSeven DM01 (`TS1000W`, `V6510C`).
+    pub const fn default_dm01() -> Self {
         Self {
             level_count: 5,
             cruise_enabled: false,
@@ -242,17 +257,17 @@ impl Default for MotorConfig {
                 },
                 AssistLevelConfig {
                     speed_limit_deci_kph: 150, // 15.0 km/h
-                    power_percent: 35,
-                    eassist_percent: 50,
+                    power_percent: 40,
+                    eassist_percent: 40,
                 },
                 AssistLevelConfig {
                     speed_limit_deci_kph: 200, // 20.0 km/h
-                    power_percent: 50,
+                    power_percent: 60,
                     eassist_percent: 60,
                 },
                 AssistLevelConfig {
                     speed_limit_deci_kph: 320, // 32.0 km/h
-                    power_percent: 70,
+                    power_percent: 80,
                     eassist_percent: 80,
                 },
                 AssistLevelConfig {
@@ -276,21 +291,21 @@ impl Default for MotorConfig {
                     eassist_percent: 100,
                 },
             ],
-            max_current_eco_ma: 10_000,   // 10.0 A
-            max_current_city_ma: 18_000,  // 18.0 A
-            max_current_sport_ma: 30_000, // 30.0 A
+            max_current_eco_ma: 10_000,   // 10.0 A (100 dA)
+            max_current_city_ma: 18_000,  // 18.0 A (180 dA)
+            max_current_sport_ma: 30_000, // 30.0 A (300 dA)
             nominal_voltage_mv: 48_000,
-            low_cut_voltage_mv: 39_000,
-            wheel_circumference_mm: 2206,
+            low_cut_voltage_mv: 41_000,
+            wheel_circumference_mm: 2230,
             rim_speed_sensor_magnets: 1,
-            crankset_teeth: 46,
+            crankset_teeth: 44,
             cassette_max_teeth: 36,
             cassette_min_teeth: 11,
             speed_sensor_fail_unlimit: false,
             motor_hw: MotorHardwareConfig {
                 gear: MotorGearType::Gear,
                 pole_pairs: 4,
-                reduction_ratio_x100: 4027, // 40.27:1
+                reduction_ratio_x100: 4027, // 40.27 : 1
                 angle_offset_deg: 0,
                 motor_constant: 100,
                 start_min_voltage_pct: 10,
@@ -315,20 +330,20 @@ impl Default for MotorConfig {
             torque_mode: TorqueMode::Safe,
             torque_zero_vol_mv: 700,
             torque_max_vol_mv: 3300,
-            torque_startup_net_vol_mv: 200,
+            torque_startup_net_vol_mv: 50,
             torque_keep_angle_deg: 90,
-            torque_min_out_current_ma: 2_000,
+            torque_min_out_current_ma: 500, // 0.5 A (5 dA)
             torque_filter: 5,
             torque_strength_value: 10,
-            torque_keep_time_ms: 2000,
+            torque_keep_time_ms: 200,
             pas_type: PasType::Auto,
             pas_magnic_count: 12,
             pas_startup_count: 1,
             pas_filter_count: 2,
-            pas_keep_time_ms: 600,
-            pas_max_speed_rpm: 160,
+            pas_keep_time_ms: 300,
+            pas_max_speed_rpm: 60,
             pas_control_mode: PasControlMode::MaxBikeSpeed,
-            pas_current_offset_ma: 5_000,
+            pas_current_offset_ma: 1_000, // 1.0 A (10 dA)
             throttle_enabled: true,
             throttle_startup_vol_mv: 800,
             throttle_control_mode: 7,
@@ -345,23 +360,53 @@ impl Default for MotorConfig {
             temp_mot_max_c: 110,
         }
     }
-}
 
-impl MotorConfig {
-    /// Returns the mode current limit in mA, compensated by battery voltage (`I_48V * 50V / V_bat`).
+    /// Exact factory default configuration for the ToSeven DM02 (`TS500W`, `V6510C`).
+    pub const fn default_dm02() -> Self {
+        let mut cfg = Self::default_dm01();
+        cfg.max_current_eco_ma = 8_000;
+        cfg.max_current_city_ma = 12_000;
+        cfg.max_current_sport_ma = 18_000;
+        cfg.motor_hw.reduction_ratio_x100 = 5300; // 53.00 : 1
+        cfg.shift_sensor_enabled = false;
+        cfg.levels[0].power_percent = 25;
+        cfg.levels[0].eassist_percent = 30;
+        cfg.levels[1].power_percent = 35;
+        cfg.levels[1].eassist_percent = 50;
+        cfg.levels[2].power_percent = 50;
+        cfg.levels[2].eassist_percent = 60;
+        cfg.levels[3].power_percent = 70;
+        cfg.levels[3].eassist_percent = 80;
+        cfg.levels[4].power_percent = 100;
+        cfg.levels[4].eassist_percent = 100;
+        cfg
+    }
+
+    /// Synchronizes `Pwr[0..5]` and `EAssist[0..5]` tables from a decoded 480-byte `EepromImage`.
+    pub fn apply_eeprom_image(&mut self, eeprom: &EepromImage) {
+        let pwr = eeprom.assist_pwr_table();
+        let eassist = eeprom.assist_eassist_table();
+        let mut i = 0;
+        while i < 5 {
+            self.levels[i].power_percent = pwr[i];
+            self.levels[i].eassist_percent = eassist[i];
+            i += 1;
+        }
+    }
+
+    /// Returns the mode current limit in mA, applying the V6510C constant-power cap above 50.0 V.
     pub fn mode_current_limit_ma(&self, mode: RidingMode, actual_battery_mv: u32) -> u32 {
         let base_ma = match mode {
             RidingMode::Eco => self.max_current_eco_ma,
             RidingMode::City => self.max_current_city_ma,
             RidingMode::Sport => self.max_current_sport_ma,
-        };
-        if actual_battery_mv == 0 {
-            return base_ma;
         }
-        let reference_mv = self.nominal_voltage_mv.saturating_add(2_000);
-        let scaled = (base_ma as u64 * reference_mv as u64) / (actual_battery_mv as u64);
-        let max_allowed = (base_ma * 120) / 100;
-        (scaled as u32).min(max_allowed)
+        .min(40_000);
+        if actual_battery_mv <= 50_000 {
+            base_ma
+        } else {
+            ((base_ma as u64 * 50_000) / (actual_battery_mv as u64)) as u32
+        }
     }
 
     /// Returns the active assist level configuration (`1..=level_count`).

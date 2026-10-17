@@ -1,15 +1,20 @@
-/// Bitmask of official controller and display fault flags documented on Pages 16-17
-/// of the T24 Display Manual and Pages 33-34 of the DM01 User Manual v2.4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+//! # Fault Detection & Protection Flags (`DM01` & `DM02`)
+//!
+//! Implements all official T24 Display Manual fault codes (`PROTOCOL_DISMATCH` through `MOTOR_OVER_TEMP`),
+//! startup torque calibration timeout checks, and low-voltage protection.
+
+/// Bitmask of active motor controller faults reported to the display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultFlags(pub u16);
 
 impl FaultFlags {
     pub const NONE: Self = Self(0);
-    /// Communication encryption index number and controller inconsistency ("Protocol Dismatch").
+
+    /// Display and controller protocol mismatch ("Protocol Dismatch").
     pub const PROTOCOL_DISMATCH: u16 = 1 << 0;
-    /// No communication between display and drive unit controller ("Communication Interrupted").
-    pub const COMMUNICATION_INTERRUPTED: u16 = 1 << 1;
-    /// Controller memory hardware failure or parameter verification failure ("Controller memory Fail").
+    /// Communication timeout between display and controller ("Comm Reception Fail").
+    pub const COMM_RECEPTION_FAIL: u16 = 1 << 1;
+    /// Flash/EEPROM parameter CRC failure ("Controller Memory Fail").
     pub const CONTROLLER_MEMORY_FAIL: u16 = 1 << 2;
     /// Throttle Hall sensor out of valid range ("Gallop Throttle Fail").
     pub const GALLOP_THROTTLE_FAIL: u16 = 1 << 3;
@@ -72,6 +77,12 @@ pub struct FaultDetector {
     speed_sensor_missing_ms: u16,
 }
 
+impl Default for FaultDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FaultDetector {
     pub const fn new() -> Self {
         Self {
@@ -83,8 +94,8 @@ impl FaultDetector {
         }
     }
 
-    /// Power-on zero-point calibration check (DM01 User Manual Page 31).
-    /// Records the resting zero reference when pedals are unloaded (`500..=1150 mV`, `0 RPM`) for 300 ms.
+    /// Power-on zero-point calibration check (DM01 User Manual Page 31 & `0x08009034`).
+    /// Records the resting zero reference when pedals are unloaded (`400..=1150 mV`, `0 RPM`) for 300 ms.
     pub fn step_startup_calibration(
         &mut self,
         torque_mv: u16,
@@ -95,7 +106,7 @@ impl FaultDetector {
             return Some(torque_mv);
         }
 
-        if (500..=1150).contains(&torque_mv) && cadence_rpm == 0 {
+        if (400..=1150).contains(&torque_mv) && cadence_rpm == 0 {
             self.calibration_elapsed_ms = self.calibration_elapsed_ms.saturating_add(dt_ms);
             if self.calibration_elapsed_ms >= 300 {
                 self.torque_calibrated = true;

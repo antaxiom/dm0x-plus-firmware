@@ -1,0 +1,26 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rustfmt Check
+        run: cargo fmt --manifest-path dm01-firmware/Cargo.toml -- --check
+      - name: Clippy Linter (-D warnings)
+        run: cargo clippy --manifest-path dm01-firmware/Cargo.toml --all-targets -- -D warnings
+      - name: Unit & Model Integration Tests
+        run: cargo test --manifest-path dm01-firmware/Cargo.toml
+      - name: Strict #![no_std] Check
+        run: cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
+      - name: Verify Stock Containers (if blobs present)
+        run: |
+          if [ -f "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack" ]; then
+            cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack"
+          fi
+          if [ -f "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack" ]; then
+            cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack"
+          fi

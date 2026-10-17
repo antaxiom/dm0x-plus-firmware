@@ -1,7 +1,12 @@
-use crate::config::FocSpecialConfig;
+//! # Field-Oriented Control (FOC) & Space Vector PWM Engine (`V6510C`)
+//!
+//! Provides both fixed-point (`Q15` / `i32`) and single-precision floating-point (`f32`,
+//! matching the Cortex-M4F hardware FPU instructions at `0x08006CA8..0x080071B0` in `V6510C`)
+//! Clarke/Park transforms, dual $I_d/I_q$ PI current regulators, Hall sensor + PLL rotor angle
+//! observer (`0x08003554` & `0x08004448`), and 7-segment Space Vector PWM (`0x080071B0`)
+//! with the `V6510C` `[0.06, 0.94]` dead-time linear duty shaping.
 
-/// Hardware-agnostic Field-Oriented Control (FOC) primitives in fixed-point Q15/i32 math.
-/// Matches the `FOC vector control special setting` menu on Page 15 of the T24 Display Manual.
+use crate::config::FocSpecialConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseCurrents {
@@ -56,7 +61,8 @@ pub const fn sin_q15(angle: u16) -> i16 {
     }
 }
 
-/// Clarke transform: converts 3-phase currents `(Ia, Ib, Ic)` into 2-axis stationary frame `(alpha, beta)`.
+/// Clarke transform (`0x0800226C` in DM01 V6510C): converts 3-phase currents `(Ia, Ib, Ic)`
+/// into 2-axis stationary frame `(alpha, beta)`.
 pub const fn clarke_transform(currents: PhaseCurrents) -> AlphaBeta {
     let alpha = currents.i_a_ma;
     let num = currents.i_a_ma + 2 * currents.i_b_ma;
@@ -64,7 +70,8 @@ pub const fn clarke_transform(currents: PhaseCurrents) -> AlphaBeta {
     AlphaBeta { alpha, beta }
 }
 
-/// Park transform: rotates stationary `(alpha, beta)` into synchronous rotor frame `(d, q)`.
+/// Park transform (`0x08006CA8` in DM01 V6510C): rotates stationary `(alpha, beta)`
+/// into synchronous rotor frame `(d, q)`.
 pub const fn park_transform(ab: AlphaBeta, sin_theta_q15: i16, cos_theta_q15: i16) -> DqFrame {
     let sin = sin_theta_q15 as i64;
     let cos = cos_theta_q15 as i64;
@@ -76,7 +83,8 @@ pub const fn park_transform(ab: AlphaBeta, sin_theta_q15: i16, cos_theta_q15: i1
     DqFrame { d, q }
 }
 
-/// Inverse Park transform: rotates synchronous `(d, q)` voltage command back to stationary `(alpha, beta)`.
+/// Inverse Park transform (`0x0800716C` in DM01 V6510C): rotates synchronous `(d, q)`
+/// voltage command back to stationary `(alpha, beta)`.
 pub const fn inverse_park_transform(
     vq_vd: DqFrame,
     sin_theta_q15: i16,
@@ -118,6 +126,111 @@ pub fn compute_svpwm(v_ab: AlphaBeta, pwm_period: u16) -> PhaseDuties {
     }
 }
 
+/// Exact decompiled `V6510C` Cortex-M4F FPU 7-segment SVPWM (`0x080071B0`) with `[0.06, 0.94]`
+/// dead-time linear duty shaping (`0x080072BA..0x08007336`).
+///
+/// Given normalized stationary voltage components `v_alpha, v_beta` in `[-1.0, 1.0]`,
+/// computes the 6-sector min-max centered duties and applies the exact `V6510C` dead-time window:
+/// - `< 0.06`: `0.0`
+/// - `0.06..0.94`: `(d - 0.06) / 0.88`
+/// - `> 0.94`: `1.0`
+pub fn compute_svpwm_v6510c_f32(v_alpha: f32, v_beta: f32, pwm_period: u16) -> PhaseDuties {
+    const SQRT3_OVER_2: f32 = 0.866_025_4;
+    let va = v_alpha;
+    let vb = -0.5 * v_alpha + SQRT3_OVER_2 * v_beta;
+    let vc = -0.5 * v_alpha - SQRT3_OVER_2 * v_beta;
+
+    let vmin = va.min(vb).min(vc);
+    let vmax = va.max(vb).max(vc);
+    let voff = -0.5 * (vmin + vmax);
+
+    let shape_channel = |v_ph: f32| -> u16 {
+        let raw_d = 0.5 + 0.5 * (v_ph + voff);
+        let shaped = if raw_d <= 0.06 {
+            0.0
+        } else if raw_d >= 0.94 {
+            1.0
+        } else {
+            (raw_d - 0.06) / 0.88
+        };
+        ((shaped * (pwm_period as f32)) + 0.5).clamp(0.0, pwm_period as f32) as u16
+    };
+
+    PhaseDuties {
+        pwm_a: shape_channel(va),
+        pwm_b: shape_channel(vb),
+        pwm_c: shape_channel(vc),
+    }
+}
+
+/// Decodes 3-bit Hall sensor state (`0b001..=0b110`) into a 16-bit electrical angle (`0..=65535`)
+/// with a configurable installation angle offset (`-30..=30` degrees).
+/// Returns `None` on invalid Hall states (`0b000` or `0b111`).
+pub const fn decode_hall_angle(hall_bits: u8, angle_offset_deg: i8) -> Option<u16> {
+    let base_angle: u16 = match hall_bits & 0b111 {
+        0b001 => 0,      //   0 deg
+        0b011 => 10_922, //  60 deg
+        0b010 => 21_845, // 120 deg
+        0b110 => 32_768, // 180 deg
+        0b100 => 43_690, // 240 deg
+        0b101 => 54_613, // 300 deg
+        _ => return None,
+    };
+    let offset_units = ((angle_offset_deg as i32) * 65536) / 360;
+    Some(base_angle.wrapping_add(offset_units as u16))
+}
+
+/// Hall Sensor + PLL Angle & Velocity Observer (`0x08003554` & `0x08004448` in DM01 V6510C).
+///
+/// Tracks Hall sector edges and interpolates smooth electrical rotor angle between
+/// 60-degree Hall transitions during each FOC PWM cycle.
+#[derive(Debug, Clone)]
+pub struct HallPllObserver {
+    pub estimated_angle: u16,
+    pub angular_velocity_step: i16,
+    pub last_hall_bits: u8,
+    pub ticks_since_edge: u16,
+}
+
+impl Default for HallPllObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HallPllObserver {
+    pub const fn new() -> Self {
+        Self {
+            estimated_angle: 0,
+            angular_velocity_step: 0,
+            last_hall_bits: 0b001,
+            ticks_since_edge: 0,
+        }
+    }
+
+    /// Updates the interpolated electrical angle at the PWM ISR rate.
+    pub fn step_isr(&mut self, hall_bits: u8, angle_offset_deg: i8) -> Option<u16> {
+        let sector_angle = decode_hall_angle(hall_bits, angle_offset_deg)?;
+        if hall_bits != self.last_hall_bits {
+            let angle_err = sector_angle.wrapping_sub(self.estimated_angle) as i16;
+            let period = self.ticks_since_edge.max(1) as i16;
+            self.angular_velocity_step = angle_err / period;
+            self.estimated_angle = sector_angle;
+            self.last_hall_bits = hall_bits;
+            self.ticks_since_edge = 1;
+        } else {
+            self.ticks_since_edge = self.ticks_since_edge.saturating_add(1);
+            // Clamp interpolation to at most one 60-degree sector (10_922 units)
+            if self.ticks_since_edge < 2000 {
+                self.estimated_angle = self
+                    .estimated_angle
+                    .wrapping_add(self.angular_velocity_step as u16);
+            }
+        }
+        Some(self.estimated_angle)
+    }
+}
+
 /// Discrete PI controller with anti-windup clamping for Id, Iq, and Speed loops.
 #[derive(Debug, Clone)]
 pub struct PiController {
@@ -148,34 +261,27 @@ impl PiController {
         let p_term = (error * self.kp_q10 as i64) >> 10;
 
         self.integral += (error * self.ki_q10 as i64) >> 10;
-        let min_i = (self.out_min as i64) << 4;
-        let max_i = (self.out_max as i64) << 4;
-        self.integral = self.integral.clamp(min_i, max_i);
+        let min_i = self.out_min as i64;
+        let max_i = self.out_max as i64;
+        if self.integral > max_i {
+            self.integral = max_i;
+        } else if self.integral < min_i {
+            self.integral = min_i;
+        }
 
-        let total = p_term + (self.integral >> 4);
-        total.clamp(self.out_min as i64, self.out_max as i64) as i32
+        let out = p_term + self.integral;
+        if out > max_i {
+            self.out_max
+        } else if out < min_i {
+            self.out_min
+        } else {
+            out as i32
+        }
     }
 }
 
-/// Decodes 3-bit Hall sensor states (`1..=6`) using the configured 6-step commutation table
-/// and `AngleOffset` (`-30°..=+30°`, Page 12 of T24 Display Manual).
-pub const fn decode_hall_angle(hall_bits: u8, angle_offset_deg: i8) -> Option<u16> {
-    let base_angle: u16 = match hall_bits & 0b111 {
-        0b001 => 0,     // 0 deg
-        0b011 => 10922, // 60 deg
-        0b010 => 21845, // 120 deg
-        0b110 => 32768, // 180 deg
-        0b100 => 43690, // 240 deg
-        0b101 => 54613, // 300 deg
-        _ => return None,
-    };
-    // 1 degree = 65536 / 360 ~= 182 angle units
-    let offset_units = (angle_offset_deg as i32) * 182;
-    Some(base_angle.wrapping_add(offset_units as u16))
-}
-
 /// Complete hard real-time FOC current regulator with `AutoCurrentPID` and `FluxWeakening`
-/// (Page 15 of T24 Display Manual).
+/// (`0x08006CEC` in DM01 V6510C & Page 15 of T24 Display Manual).
 pub struct FocCurrentLoop {
     pub id_pi: PiController,
     pub iq_pi: PiController,
@@ -194,11 +300,8 @@ impl FocCurrentLoop {
     }
 
     /// Configures the current loop PI gains from the `FOC Menu` settings.
-    /// When `auto_current_pid` is enabled, derives `CurrentKp` and `CurrentKi` automatically
-    /// from the motor's internal `resistance_mohm` and `inductance_uh` (Page 15 of T24 Manual).
     pub fn configure_from_foc_menu(&mut self, foc_cfg: &FocSpecialConfig) {
         let (kp, ki) = if foc_cfg.auto_current_pid {
-            // Bandwidth-based pole-zero cancellation: Kp ~ L, Ki ~ R
             let auto_kp = ((foc_cfg.inductance_uh as i32) * 4).clamp(20, 5000);
             let auto_ki = ((foc_cfg.resistance_mohm as i32) * 2).clamp(1, 500);
             (auto_kp, auto_ki)
@@ -245,7 +348,6 @@ impl FocCurrentLoop {
         let v_d = self.id_pi.step(id_target_ma, dq_curr.d);
         let v_q = self.iq_pi.step(iq_target_ma, dq_curr.q);
 
-        // Estimate voltage vector magnitude in permille of bus ceiling (30_000)
         let mag_approx = v_q.abs().max(v_d.abs()) as u32;
         self.last_modulation_permille = ((mag_approx * 1000) / 30_000).min(1000) as u16;
 
@@ -264,6 +366,11 @@ mod tests {
         assert_eq!(duties.pwm_a, 1000);
         assert_eq!(duties.pwm_b, 1000);
         assert_eq!(duties.pwm_c, 1000);
+
+        let fpu_duties = compute_svpwm_v6510c_f32(0.0, 0.0, 2000);
+        assert_eq!(fpu_duties.pwm_a, 1000);
+        assert_eq!(fpu_duties.pwm_b, 1000);
+        assert_eq!(fpu_duties.pwm_c, 1000);
     }
 
     #[test]

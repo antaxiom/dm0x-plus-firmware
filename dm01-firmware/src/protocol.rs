@@ -1,7 +1,25 @@
+//! # Display UART Communication Protocol & `0x69` Stream Cipher (`V6510C`)
+//!
+//! Implements the motor-controller-to-display UART protocol, including:
+//! - The byte-wise `0x69` XOR stream cipher (`0x080095D8` RX and `0x0800966C` TX in `V6510C`)
+//! - Live telemetry frame serialization/deserialization
+//! - CRC-16 verification
+
+use crate::eeprom::crc16_toseven;
 use crate::faults::FaultFlags;
 
 /// Start-of-frame marker for UART telemetry and configuration frames.
 pub const FRAME_SOF: u8 = 0x5A;
+
+/// Stream XOR key applied to every byte sent or received over the Display UART (`0x080095D8` / `0x0800966C`).
+pub const UART_STREAM_XOR_KEY: u8 = 0x69;
+
+/// Encrypts or decrypts a UART byte buffer in-place using the `V6510C` `0x69` stream cipher.
+pub fn xor_uart_stream_in_place(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        *b ^= UART_STREAM_XOR_KEY;
+    }
+}
 
 /// Real-time telemetry packet sent from the motor controller to the display / tuning app.
 /// Includes all live diagnostic fields visible in the Display "Test > Drive" menu.
@@ -21,7 +39,7 @@ pub struct TelemetryFrame {
 impl TelemetryFrame {
     pub const ENCODED_LEN: usize = 18;
 
-    /// Serializes the telemetry frame into an 18-byte buffer with CRC-16-CCITT integrity check.
+    /// Serializes the telemetry frame into an 18-byte plaintext buffer with CRC-16 integrity check.
     pub fn encode(&self, out: &mut [u8; 18]) {
         out[0] = FRAME_SOF;
         out[1] = 0x01; // Frame type: Live Telemetry
@@ -33,16 +51,22 @@ impl TelemetryFrame {
         out[11..13].copy_from_slice(&self.torque_sensor_mv.to_le_bytes());
         out[13..15].copy_from_slice(&self.throttle_mv.to_le_bytes());
         out[15] = self.controller_temp_c as u8;
-        let crc = crc16_ccitt(&out[0..16]);
+        let crc = crc16_toseven(&out[0..16]);
         out[16..18].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// Decodes and verifies an 18-byte telemetry frame.
+    /// Serializes the telemetry frame and applies the `0x69` UART stream XOR cipher for wire transmission.
+    pub fn encode_encrypted_wire(&self, out: &mut [u8; 18]) {
+        self.encode(out);
+        xor_uart_stream_in_place(out);
+    }
+
+    /// Decodes and verifies an 18-byte plaintext telemetry frame.
     pub fn decode(buf: &[u8; 18]) -> Option<Self> {
         if buf[0] != FRAME_SOF || buf[1] != 0x01 {
             return None;
         }
-        let expected_crc = crc16_ccitt(&buf[0..16]);
+        let expected_crc = crc16_toseven(&buf[0..16]);
         let actual_crc = u16::from_le_bytes([buf[16], buf[17]]);
         if expected_crc != actual_crc {
             return None;
@@ -58,6 +82,13 @@ impl TelemetryFrame {
             controller_temp_c: buf[15] as i8,
             faults: FaultFlags::NONE,
         })
+    }
+
+    /// Decrypts an 18-byte wire frame using the `0x69` UART XOR cipher and verifies its CRC-16.
+    pub fn decode_encrypted_wire(wire_buf: &[u8; 18]) -> Option<Self> {
+        let mut plain = *wire_buf;
+        xor_uart_stream_in_place(&mut plain);
+        Self::decode(&plain)
     }
 }
 
@@ -86,7 +117,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_telemetry_frame_roundtrip_and_crc() {
+    fn test_telemetry_frame_roundtrip_and_wire_cipher() {
         let frame = TelemetryFrame {
             battery_voltage_deci_v: 524,
             battery_soc_percent: 88,
@@ -98,14 +129,15 @@ mod tests {
             controller_temp_c: 54,
             faults: FaultFlags::NONE,
         };
-        let mut buf = [0u8; 18];
-        frame.encode(&mut buf);
+        let mut wire = [0u8; 18];
+        frame.encode_encrypted_wire(&mut wire);
+        assert_eq!(wire[0], FRAME_SOF ^ UART_STREAM_XOR_KEY);
 
-        let decoded = TelemetryFrame::decode(&buf).expect("valid CRC");
+        let decoded = TelemetryFrame::decode_encrypted_wire(&wire).expect("valid encrypted frame");
         assert_eq!(decoded, frame);
 
-        // Corrupt 1 bit and verify rejection
-        buf[5] ^= 0x01;
-        assert!(TelemetryFrame::decode(&buf).is_none());
+        // Corrupt 1 bit on the wire and verify rejection
+        wire[5] ^= 0x01;
+        assert!(TelemetryFrame::decode_encrypted_wire(&wire).is_none());
     }
 }

@@ -1,3 +1,8 @@
+//! # Hardware Abstraction Layer (HAL) Traits
+//!
+//! Defines hardware-agnostic traits for the 3-phase PWM inverter timer, ADC/Hall sensor
+//! peripherals, and Flash EEPROM configuration persistence.
+
 use crate::config::MotorConfig;
 use crate::control::SensorInputs;
 use crate::foc::{PhaseCurrents, PhaseDuties};
@@ -22,9 +27,12 @@ pub trait MotorSensorsHal {
     fn sample_control_inputs(&mut self) -> SensorInputs;
 }
 
+/// Error returned when persisting configuration to non-volatile storage fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageError;
+
 /// Non-volatile Flash / EEPROM storage trait for persisting user-configured `MotorConfig` profiles.
 pub trait ConfigStorageHal {
     fn load_config(&mut self) -> Option<MotorConfig>;
-    fn save_config(&mut self, config: &MotorConfig) -> Result<(), ()>;
+    fn save_config(&mut self, config: &MotorConfig) -> Result<(), StorageError>;
 }
-

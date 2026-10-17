@@ -1,2 +1,14 @@
 .DS_Store
 **/target/
+.agents/
+build/
+
+# External proprietary assets & blobs (cataloged in blobs/README.md)
+blobs/*
+!blobs/README.md
+
+# Compiled firmware outputs & artifacts
+*.Pack
+*.bin
+*.hex
+*.elf
