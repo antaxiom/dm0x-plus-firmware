@@ -1,0 +1,14 @@
+[package]
+name = "dm01-firmware"
+version = "0.1.0"
+edition = "2021"
+description = "Clean-room user-configurable firmware control logic for the ToSeven DM01 mid-drive motor"
+
+[lib]
+name = "dm01_firmware"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = []
+
