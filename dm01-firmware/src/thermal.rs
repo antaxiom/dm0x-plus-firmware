@@ -1,46 +1,70 @@
-use crate::config::MotorConfig;
+use crate::config::{MotorConfig, OverTempMode};
 
-/// Thermal protection state machine.
-/// Monitors controller temperature and enforces the documented 30% rollback above MaxTemp.
+/// Thermal protection monitor for both Controller (`CTL`) and Motor (`MOT`) temperature sensors
+/// matching Page 14 of the T24 Display Manual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThermalMonitor {
-    pub is_throttling: bool,
+    pub ctl_overheated: bool,
+    pub mot_overheated: bool,
 }
 
 impl ThermalMonitor {
     pub const fn new() -> Self {
         Self {
-            is_throttling: false,
+            ctl_overheated: false,
+            mot_overheated: false,
         }
     }
 
-    /// Returns a current scaling factor in permille (300..=1000) based on controller temperature.
-    pub fn update_scale_permille(&mut self, controller_temp_c: i16, config: &MotorConfig) -> u16 {
-        if controller_temp_c >= config.temp_max_c {
-            self.is_throttling = true;
-            // Above MaxTemp (default 100C), roll back output power to 30%
-            return 300;
-        }
+    /// Evaluates controller (`CTL`) and motor (`MOT`) temperatures and returns the active
+    /// current limit scaling factor in permille (`300`, `500`, `700`, or `1000`).
+    pub fn update_scale_permille(
+        &mut self,
+        controller_temp_c: i16,
+        motor_temp_c: i16,
+        config: &MotorConfig,
+    ) -> u16 {
+        let mut scale_permille = 1000u16;
 
-        // Hysteresis recovery: clear hard thermal rollback once temp drops 3C below MaxTemp
-        if self.is_throttling {
-            if controller_temp_c <= config.temp_max_c.saturating_sub(3) {
-                self.is_throttling = false;
-            } else {
-                return 300;
+        // 1. Controller temperature sensor (CTL)
+        if config.temp_ctl_enabled {
+            if controller_temp_c >= config.temp_ctl_max_c {
+                self.ctl_overheated = true;
+            } else if self.ctl_overheated && controller_temp_c <= config.temp_ctl_min_c {
+                self.ctl_overheated = false;
             }
+
+            if self.ctl_overheated {
+                scale_permille = scale_permille.min(mode_to_permille(config.temp_ctl_over_mode));
+            }
+        } else {
+            self.ctl_overheated = false;
         }
 
-        // Progressive linear derating between MinTemp (70C) and MaxTemp (100C) if desired,
-        // tapering from 100% (1000) at MinTemp down to 70% (700) just before MaxTemp cutoff.
-        if controller_temp_c > config.temp_min_c && config.temp_max_c > config.temp_min_c {
-            let range = (config.temp_max_c - config.temp_min_c) as i32;
-            let excess = (controller_temp_c - config.temp_min_c) as i32;
-            let reduction = (excess * 300) / range;
-            return (1000 - reduction).clamp(300, 1000) as u16;
+        // 2. Motor temperature sensor (MOT, optional hardware)
+        if config.temp_mot_enabled {
+            if motor_temp_c >= config.temp_mot_max_c {
+                self.mot_overheated = true;
+            } else if self.mot_overheated && motor_temp_c <= config.temp_mot_min_c {
+                self.mot_overheated = false;
+            }
+
+            if self.mot_overheated {
+                scale_permille = scale_permille.min(mode_to_permille(config.temp_mot_over_mode));
+            }
+        } else {
+            self.mot_overheated = false;
         }
 
-        1000
+        scale_permille
     }
 }
 
+const fn mode_to_permille(mode: OverTempMode) -> u16 {
+    match mode {
+        OverTempMode::Skip => 1000,
+        OverTempMode::Power30Percent => 300,
+        OverTempMode::Power50Percent => 500,
+        OverTempMode::Power70Percent => 700,
+    }
+}

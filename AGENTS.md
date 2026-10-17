@@ -1,14 +1,14 @@
 # Project Notes & Architecture Reference (`AGENTS.md`)
 
 ## Workspace Structure
-- `dm01-firmware/` — Clean-room `no_std` Embedded Rust DM01 motor controller firmware crate:
-  - `src/config.rs` — User-configurable parameters (`MotorConfig`) & community tuning presets (`preset_en15194`, `preset_jonas_dm01`, `preset_eight_level_progressive`)
-  - `src/sensors.rs` — Strain-gauge torque sensor with dynamic zero-point thermal drift compensation (`TorqueSensorState`) and Hall throttle parser
-  - `src/battery.rs` — 6-point voltage-to-SoC calibration curve (`36V`/`48V`/`52V`/`60V`/`72V`) and debounced low-voltage cutoff (`BatteryMonitor`)
-  - `src/thermal.rs` — Controller thermal derating and `100°C` 30% rollback (`ThermalMonitor`)
-  - `src/faults.rs` — Startup torque calibration timeout, `MotorBlocked` stall detection, and sensor plausibility checks (`FaultDetector`)
-  - `src/control.rs` — Periodic control loop (`Dm01Controller`) combining PAS, torque, throttle modes, shift cutoffs, and smooth speed tapering
-  - `src/foc.rs` — Fixed-point `Q15` Clarke/Park transforms, 4th-order parabolic trig, anti-windup PI controllers, Hall angle decoder, and 7-segment SVPWM (`FocCurrentLoop`)
+- `dm01-firmware/` — Clean-room `no_std` Embedded Rust DM01 motor controller firmware crate (`v0.1.0-stock-baseline` tagged in Git):
+  - `src/config.rs` — Official DM01 v2.4 & T24 Display manual parameter tables (`MotorConfig`, `MotorHardwareConfig`, `FocSpecialConfig`, `PasConfig`, `TorqueConfig`, `ThrottleConfig`, `ThermalProtectionConfig`, `AssistSelection` `Off`/`1..=8`/`A`/`C`/`R`)
+  - `src/sensors.rs` — Stock power-on strain-gauge torque sensor (`ZeroVol`, `MaxVol`, `StartupNetVol = current_vol - zero_vol`, `Filter`, `StrengthValue`) and Hall throttle (`StartupVol`)
+  - `src/battery.rs` — 6-point voltage-to-SoC calibration curve (`24V`/`36V`/`43V`/`48V`/`52V`/`60V`/`72V`) and debounced low-voltage cutoff (`BatteryMonitor`)
+  - `src/thermal.rs` — Stock controller (`CTL`) and motor (`MOT`) step thermal rollback (`Skip`, `30%`, `50%`, `70%`)
+  - `src/faults.rs` — All 10 official T24 manual fault codes (`PROTOCOL_DISMATCH` through `MOTOR_OVER_TEMP`) plus startup torque calibration timeout and low-voltage protection (`FaultDetector`)
+  - `src/control.rs` — Stock periodic control loop (`Dm01Controller`) implementing all 13 Throttle `ControlMode` rules (`0..=12`), all 4 PAS `ControlMode` mappings, Special Assist levels (`A`/`C`/`R`), and stock hard speed cutoff
+  - `src/foc.rs` — Fixed-point `Q15` Clarke/Park transforms, `AutoCurrentPID` ($R, L \to K_p, K_i$), flux weakening (`FluxWeakVoltage`, `FluxWeakCurrent`), Hall angle decoder, and 7-segment SVPWM (`FocCurrentLoop`)
   - `src/protocol.rs` — UART telemetry frame serializer/deserializer with CRC-16-CCITT verification (`TelemetryFrame`)
   - `src/hal.rs` — Hardware abstraction traits (`ThreePhasePwm`, `MotorSensorsHal`, `ConfigStorageHal`)
 - `DM01 Sources/` — DM01 firmware packages
@@ -17,7 +17,7 @@
 - `Documentation/`
   - `Official_Specifications.md` — Hardware specifications and official manual links scraped from `to7motor.com`
   - `Miraheze_Wiki/` — Complete local archive of all 14 pages from the ToSeven Miraheze Wiki (`Main_Page`, `Firmware`, `Display_Settings`, `General_FAQs`, `Installation_and_bike_fit`, `Chains__chainrings_and_chain_lines`, `Accessories`, `Batteries`, `Repairs_and_maintenance`, `Troubleshooting`, `Example_Setups`, `Other_resources`, `Sellers`, `Easter_egg`)
-  - `Manuals/` — Official PDF user manuals
+  - `Manuals/` — Official PDF user manuals (`DM01-User-Manual-v2.4.pdf`, `DM02-User-Manual-v2.4.pdf`, `T24-Display-Manual.pdf`, `LCD135C-Bluetooth-User-Guide.pdf`)
 
 ---
 

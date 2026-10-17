@@ -1,8 +1,11 @@
-use crate::config::{MotorConfig, RidingMode, SpeedLimitMode, TorqueMode};
+use crate::config::{
+    AssistLevelConfig, AssistSelection, MotorConfig, PasControlMode, PasType, RidingMode,
+    TorqueMode,
+};
 use crate::sensors::{parse_throttle_permille, TorqueSensorState};
 use crate::thermal::ThermalMonitor;
 
-/// Snapshot of physical sensor inputs sampled at each control tick.
+/// Snapshot of physical sensor inputs sampled at each periodic control tick.
 #[derive(Debug, Clone, Copy)]
 pub struct SensorInputs {
     pub battery_voltage_mv: u32,
@@ -15,24 +18,27 @@ pub struct SensorInputs {
     pub shift_sensor_triggered: bool,
     pub walk_assist_held: bool,
     pub controller_temp_c: i16,
+    pub motor_temp_c: i16,
 }
 
-/// Output command from the high-level motor control loop to the FOC current loop.
+/// Output command from the periodic motor control loop to the FOC current loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlOutput {
-    /// Target phase/battery current in milliamps (mA).
+    /// Target phase/battery current magnitude in milliamps (mA).
     pub target_current_ma: u32,
-    /// True if safety or shift/brake cutoffs are actively inhibiting power.
+    /// True if Special Level R (Reverse) is active.
+    pub reverse_direction: bool,
+    /// True if safety, brake, or shift cutoffs are actively inhibiting power.
     pub cutoff_active: bool,
-    /// True if thermal rollback is active.
+    /// True if controller or motor thermal rollback is active.
     pub thermal_throttling: bool,
 }
 
-/// Stateful periodic controller for the DM01 mid-drive motor.
+/// Stock DM01 periodic controller matching the official DM01 v2.4 and T24 Display manuals.
 pub struct Dm01Controller {
     pub config: MotorConfig,
     pub mode: RidingMode,
-    pub assist_level: u8,
+    pub assist: AssistSelection,
     pub torque_state: TorqueSensorState,
     pub thermal: ThermalMonitor,
     pas_keep_timer_ms: u16,
@@ -45,7 +51,7 @@ impl Dm01Controller {
         Self {
             config,
             mode: RidingMode::City,
-            assist_level: 1,
+            assist: AssistSelection::Level(1),
             torque_state: TorqueSensorState::new(zero_mv),
             thermal: ThermalMonitor::new(),
             pas_keep_timer_ms: 0,
@@ -53,7 +59,7 @@ impl Dm01Controller {
         }
     }
 
-    /// Executes one control step (e.g., every 10 ms / 100 Hz) and computes the target current.
+    /// Executes one stock control step (e.g., 100 Hz / 10 ms) and returns the target current.
     pub fn step(&mut self, inputs: &SensorInputs, dt_ms: u16) -> ControlOutput {
         // 1. Immediate safety cutoffs: brake levers, backpedaling, or low-voltage cutoff
         if inputs.brake_active
@@ -64,49 +70,92 @@ impl Dm01Controller {
             self.torque_state.keep_timer_ms = 0;
             return ControlOutput {
                 target_current_ma: 0,
+                reverse_direction: false,
                 cutoff_active: true,
-                thermal_throttling: self.thermal.is_throttling,
+                thermal_throttling: self.thermal.ctl_overheated || self.thermal.mot_overheated,
             };
         }
 
-        // 2. Shift sensor timer management
+        // 2. Shift sensor interruption timer
         if self.config.shift_sensor_enabled && inputs.shift_sensor_triggered {
             self.shift_timer_ms = self.config.shift_delay_ms;
         } else if self.shift_timer_ms > 0 {
             self.shift_timer_ms = self.shift_timer_ms.saturating_sub(dt_ms);
         }
 
-        // 3. Walk assist mode (6.0 km/h cap)
+        // 3. Walk assistance (6.0 km/h cap, T24 Manual Page 4)
         if inputs.walk_assist_held {
             let walk_current_ma = if inputs.wheel_speed_deci_kph < 60 {
-                3_000 // Gentle 3A walk assist
+                3_000
             } else {
                 0
             };
             return ControlOutput {
                 target_current_ma: walk_current_ma,
+                reverse_direction: false,
                 cutoff_active: false,
-                thermal_throttling: self.thermal.is_throttling,
+                thermal_throttling: self.thermal.ctl_overheated || self.thermal.mot_overheated,
             };
         }
 
-        // 4. Determine mode maximum current (with voltage sag compensation)
+        // 4. Resolve active assist level or special mode (0, 1..=8, Auto, Climb, Reverse)
+        let mut reverse_direction = false;
+        let resolved_level: Option<AssistLevelConfig> = match self.assist {
+            AssistSelection::Off => None,
+            AssistSelection::Level(lvl) => self.config.active_level(lvl).copied(),
+            AssistSelection::Auto => {
+                // Auto Level: automatically adjusts power and speed according to bike speed
+                let idx = if inputs.wheel_speed_deci_kph < 120 {
+                    1
+                } else if inputs.wheel_speed_deci_kph < 220 {
+                    3
+                } else {
+                    self.config.level_count
+                };
+                self.config.active_level(idx).copied()
+            }
+            AssistSelection::Climb => {
+                // C Level: strong power when using pedal sensor uphill
+                Some(AssistLevelConfig {
+                    speed_limit_deci_kph: self.config.max_level_speed_deci_kph(),
+                    power_percent: 100,
+                    eassist_percent: 100,
+                })
+            }
+            AssistSelection::Reverse => {
+                reverse_direction = true;
+                Some(AssistLevelConfig {
+                    speed_limit_deci_kph: 60, // 6.0 km/h safe reverse limit
+                    power_percent: 25,
+                    eassist_percent: 30,
+                })
+            }
+        };
+
+        let Some(level_cfg) = resolved_level else {
+            return ControlOutput {
+                target_current_ma: 0,
+                reverse_direction: false,
+                cutoff_active: false,
+                thermal_throttling: self.thermal.ctl_overheated || self.thermal.mot_overheated,
+            };
+        };
+
+        // 5. Mode maximum current (Eco / City / Sport)
         let mode_max_ma = self
             .config
             .mode_current_limit_ma(self.mode, inputs.battery_voltage_mv);
+        let level_ceiling_ma = (mode_max_ma * level_cfg.power_percent as u32) / 100;
 
-        // 5. Update torque sensor state
-        let torque_permille = self.torque_state.update(
-            inputs.torque_adc_mv,
-            inputs.cadence_rpm,
-            dt_ms,
-            &self.config,
-        );
+        // 6. Update Torque Sensor state
+        let torque_permille =
+            self.torque_state
+                .update(inputs.torque_adc_mv, dt_ms, &self.config);
 
-        // 6. Update PAS keep-time state
-        let pas_active = if self.config.pas_enabled
+        // 7. Update PAS state
+        let pas_active = if self.config.pas_type != PasType::Disable
             && inputs.cadence_rpm > 0
-            && inputs.cadence_rpm <= self.config.pas_max_cadence_rpm
+            && inputs.cadence_rpm <= self.config.pas_max_speed_rpm
         {
             self.pas_keep_timer_ms = self.config.pas_keep_time_ms.clamp(200, 1000);
             true
@@ -117,118 +166,129 @@ impl Dm01Controller {
             false
         };
 
-        // 7. Compute pedal-assist demand from active level
+        // 8. Compute Pedal (Torque / PAS) current demand
         let mut pedal_current_ma = 0u32;
-        if let Some(level_cfg) = self.config.active_level(self.assist_level) {
-            let level_ceiling_ma = (mode_max_ma * level_cfg.power_percent as u32) / 100;
-
-            if self.config.torque_sensor_enabled {
-                // In Safe mode, require PAS rotation or high pedal force; in Sensitive mode, respond immediately
-                let can_engage = match self.config.torque_mode {
-                    TorqueMode::Safe => pas_active || torque_permille > 250,
-                    TorqueMode::Sensitive => torque_permille > 0,
-                };
-                if can_engage && torque_permille > 0 {
-                    // Combine EAssist base boost with proportional torque effort
-                    let eassist_base_ma =
-                        (level_ceiling_ma * level_cfg.eassist_percent as u32) / 100;
-                    let dynamic_span_ma = level_ceiling_ma.saturating_sub(eassist_base_ma);
-                    let raw_ma = self.config.torque_current_offset_ma
-                        + eassist_base_ma
-                        + (dynamic_span_ma * torque_permille as u32) / 1000;
-                    pedal_current_ma = raw_ma.min(level_ceiling_ma);
-                }
-            } else if pas_active {
-                // Cadence-only (PAS) mode scales with cadence up to level ceiling
-                let cadence_factor = ((inputs.cadence_rpm as u32
-                    * self.config.pas_strength_rpm.max(1) as u32)
-                    * 10)
-                    .min(1000);
-                let raw_ma = self.config.pas_current_offset_ma
-                    + ((level_ceiling_ma.saturating_sub(self.config.pas_current_offset_ma))
-                        * cadence_factor)
-                        / 1000;
+        if self.config.torque_sensor_enabled {
+            // T24 Manual Page 13:
+            // Safe: net torque > StartupNetVol AND start pedaling
+            // Sensitive: net torque > StartupNetVol immediately activates
+            let can_engage = match self.config.torque_mode {
+                TorqueMode::Safe => pas_active && torque_permille > 0,
+                TorqueMode::Sensitive => torque_permille > 0,
+            };
+            if can_engage {
+                let eassist_base_ma =
+                    (level_ceiling_ma * level_cfg.eassist_percent as u32) / 100;
+                let dynamic_span_ma = level_ceiling_ma.saturating_sub(eassist_base_ma);
+                let raw_ma = self.config.torque_min_out_current_ma
+                    + eassist_base_ma
+                    + (dynamic_span_ma * torque_permille as u32) / 1000;
                 pedal_current_ma = raw_ma.min(level_ceiling_ma);
             }
-
-            // Apply smooth speed limit tapering (2.0 km/h taper band instead of abrupt wall cutoff)
-            let speed_mode = if self.config.torque_sensor_enabled {
-                self.config.torque_speed_mode
-            } else {
-                self.config.pas_speed_mode
-            };
-            let speed_limit_deci_kph = match speed_mode {
-                SpeedLimitMode::SpeedLevel => Some(level_cfg.speed_limit_deci_kph),
-                SpeedLimitMode::SpeedMaxLevel => Some(self.config.max_level_speed_deci_kph()),
-                SpeedLimitMode::NoSpeedLimit => None,
-            };
-            if let Some(limit) = speed_limit_deci_kph {
-                pedal_current_ma =
-                    apply_speed_taper(pedal_current_ma, inputs.wheel_speed_deci_kph, limit);
-            }
+        } else if pas_active {
+            let max_cad = self.config.pas_max_speed_rpm.max(60) as u32;
+            let cadence_factor = ((inputs.cadence_rpm as u32 * 1000) / max_cad).min(1000);
+            let raw_ma = self.config.pas_current_offset_ma
+                + ((level_ceiling_ma.saturating_sub(self.config.pas_current_offset_ma))
+                    * cadence_factor)
+                    / 1000;
+            pedal_current_ma = raw_ma.min(level_ceiling_ma);
         }
 
-        // 8. Compute Throttle demand
+        // Enforce stock PAS / Pedal Speed Limit (T24 Manual Pages 12-13)
+        let pedal_speed_limit_deci_kph = match self.config.pas_control_mode {
+            PasControlMode::MaxBikeSpeed => self.config.max_level_speed_deci_kph(),
+            PasControlMode::LevelSpeed => level_cfg.speed_limit_deci_kph,
+            PasControlMode::PedalSpeed1 | PasControlMode::PedalSpeed2 => {
+                // Bicycle speed limit proportional to PAS cadence ratio
+                let max_wheel = self.config.max_level_speed_deci_kph() as u32;
+                let max_pas = self.config.pas_max_speed_rpm.max(60) as u32;
+                ((inputs.cadence_rpm as u32 * max_wheel) / max_pas).min(max_wheel) as u16
+            }
+        };
+        if inputs.wheel_speed_deci_kph >= pedal_speed_limit_deci_kph {
+            pedal_current_ma = 0;
+        }
+
+        // 9. Compute Throttle demand using the exact 0..=12 ControlMode table (T24 Manual Page 13)
         let mut throttle_current_ma = 0u32;
-        let throttle_permille = parse_throttle_permille(inputs.throttle_adc_mv);
-        if throttle_permille > 0 && self.assist_level > 0 {
+        let throttle_permille =
+            parse_throttle_permille(inputs.throttle_adc_mv, self.config.throttle_startup_vol_mv);
+        if throttle_permille > 0 {
             if !self.config.throttle_enabled {
-                // When throttle is disabled in settings, it acts as a 6 km/h walk assist
+                // Disabled throttle acts as 6 km/h walk assist
                 if inputs.wheel_speed_deci_kph < 60 {
                     throttle_current_ma = (mode_max_ma * throttle_permille as u32) / 4000;
                 }
             } else {
-                // Mode 7 default: 32 km/h throttle-only, 40 km/h when pedaling; Mode 12: unrestricted scooter mode
-                let throttle_limit_deci_kph = match (self.config.throttle_speed_mode, pas_active) {
-                    (3, _) => Some(60),        // 6.0 km/h EN15194 mode
-                    (7, false) => Some(320),   // 32.0 km/h throttle-only
-                    (7, true) => Some(400),    // 40.0 km/h with PAS
-                    (12, _) => None,           // Scooter mode
-                    (_, _) => Some(self.config.max_level_speed_deci_kph()),
-                };
-                let raw_throttle_ma = (mode_max_ma * throttle_permille as u32) / 1000;
-                throttle_current_ma = match throttle_limit_deci_kph {
-                    Some(limit) => {
-                        apply_speed_taper(raw_throttle_ma, inputs.wheel_speed_deci_kph, limit)
+                let max_gear_spd = self.config.max_level_speed_deci_kph();
+                let lvl_spd = level_cfg.speed_limit_deci_kph;
+
+                // Resolve (speed_limit_deci_kph, use_top_level_power) from Table on Page 13:
+                let throttle_spec: Option<(Option<u16>, bool)> =
+                    match (self.config.throttle_control_mode, pas_active) {
+                        (0, false) | (1, false) | (2, false) => None, // Null not working
+                        (0, true) => Some((Some(60), false)),
+                        (1, true) => Some((Some(lvl_spd), false)),
+                        (2, true) => Some((Some(max_gear_spd), false)),
+                        (3, _) => Some((Some(60), false)),
+                        (4, false) => Some((Some(60), false)),
+                        (4, true) => Some((Some(lvl_spd), false)),
+                        (5, false) => Some((Some(60), false)),
+                        (5, true) => Some((Some(max_gear_spd), false)),
+                        (6, _) => Some((Some(lvl_spd), false)),
+                        (7, false) => Some((Some(lvl_spd.max(320)), false)),
+                        (7, true) => Some((Some(max_gear_spd), false)),
+                        (8, false) => Some((Some(lvl_spd), true)),
+                        (8, true) => Some((Some(max_gear_spd), true)),
+                        (9, false) => Some((Some(60), false)),
+                        (9, true) => Some((Some(max_gear_spd), true)),
+                        (10, false) => Some((Some(lvl_spd), false)),
+                        (10, true) => Some((Some(max_gear_spd), true)),
+                        (11, _) => Some((Some(max_gear_spd), true)),
+                        (12, _) => Some((None, true)), // Mode 12: Scooter mode, no speed limit
+                        _ => Some((Some(max_gear_spd), false)),
+                    };
+
+                if let Some((opt_limit, full2_power)) = throttle_spec {
+                    let ceiling = if full2_power {
+                        mode_max_ma
+                    } else {
+                        level_ceiling_ma
+                    };
+                    let within_speed = match opt_limit {
+                        Some(limit) => inputs.wheel_speed_deci_kph < limit,
+                        None => true,
+                    };
+                    if within_speed {
+                        throttle_current_ma = (ceiling * throttle_permille as u32) / 1000;
                     }
-                    None => raw_throttle_ma,
-                };
+                }
             }
         }
 
         let mut combined_ma = pedal_current_ma.max(throttle_current_ma);
 
-        // 9. Apply Shift Sensor power reduction if active
+        // 10. Shift sensor reduction
         if self.shift_timer_ms > 0 {
             combined_ma = (combined_ma * self.config.shift_power_percent as u32) / 100;
         }
 
-        // 10. Apply Thermal Protection scaling
-        let thermal_scale_permille = self
-            .thermal
-            .update_scale_permille(inputs.controller_temp_c, &self.config);
+        // 11. Thermal protection rollback (CTL and MOT sensors)
+        let thermal_scale_permille = self.thermal.update_scale_permille(
+            inputs.controller_temp_c,
+            inputs.motor_temp_c,
+            &self.config,
+        );
         combined_ma = (combined_ma * thermal_scale_permille as u32) / 1000;
 
         ControlOutput {
             target_current_ma: combined_ma,
+            reverse_direction,
             cutoff_active: self.shift_timer_ms > 0,
-            thermal_throttling: self.thermal.is_throttling,
+            thermal_throttling: self.thermal.ctl_overheated || self.thermal.mot_overheated,
         }
     }
-}
-
-/// Smoothly tapers current over a 2.0 km/h (20 deci-kph) window approaching `limit_deci_kph`
-/// to eliminate the harsh "hitting a wall" cutoff sensation.
-fn apply_speed_taper(current_ma: u32, speed_deci_kph: u16, limit_deci_kph: u16) -> u32 {
-    if speed_deci_kph >= limit_deci_kph {
-        return 0;
-    }
-    let taper_start = limit_deci_kph.saturating_sub(20);
-    if speed_deci_kph <= taper_start {
-        return current_ma;
-    }
-    let remaining = (limit_deci_kph - speed_deci_kph) as u32;
-    (current_ma * remaining) / 20
 }
 
 #[cfg(test)]
@@ -247,6 +307,7 @@ mod tests {
             shift_sensor_triggered: false,
             walk_assist_held: false,
             controller_temp_c: 45,
+            motor_temp_c: 50,
         }
     }
 
@@ -254,7 +315,7 @@ mod tests {
     fn test_brake_and_backpedal_cutoff() {
         let mut ctrl = Dm01Controller::new(MotorConfig::default());
         ctrl.mode = RidingMode::Sport;
-        ctrl.assist_level = 5;
+        ctrl.assist = AssistSelection::Level(5);
 
         let mut inputs = default_inputs();
         inputs.torque_adc_mv = 2500;
@@ -267,42 +328,45 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_zero_drift_compensation_prevents_ghost_pedaling() {
+    fn test_stock_throttle_modes_0_to_12() {
         let mut ctrl = Dm01Controller::new(MotorConfig::default());
-        ctrl.config.torque_mode = TorqueMode::Sensitive;
-        ctrl.assist_level = 3;
+        ctrl.mode = RidingMode::Sport;
+        ctrl.assist = AssistSelection::Level(2); // Level 2 speed limit = 15.0 km/h
 
         let mut inputs = default_inputs();
-        // Simulate thermal drift raising idle torque voltage from 700mV to 950mV while not pedaling
-        inputs.torque_adc_mv = 950;
-        inputs.cadence_rpm = 0;
+        inputs.throttle_adc_mv = 3250; // 100% throttle
+        inputs.cadence_rpm = 0; // PAS not working
+        inputs.wheel_speed_deci_kph = 100; // 10.0 km/h
 
-        for _ in 0..300 {
-            ctrl.step(&inputs, 500);
-        }
-        assert_eq!(ctrl.torque_state.dynamic_zero_mv, 950);
+        // Mode 0 with PAS not working -> Null (0 mA)
+        ctrl.config.throttle_control_mode = 0;
+        assert_eq!(ctrl.step(&inputs, 10).target_current_ma, 0);
 
-        // Because dynamic zero tracked to 950mV, 950mV at rest produces 0A (no ghost pedaling)
-        let out = ctrl.step(&inputs, 10);
-        assert_eq!(out.target_current_ma, 0);
+        // Mode 3 with PAS not working at 10 km/h -> exceeds 6 km/h cap (0 mA)
+        ctrl.config.throttle_control_mode = 3;
+        assert_eq!(ctrl.step(&inputs, 10).target_current_ma, 0);
+
+        // Mode 12 (Scooter mode) at 45 km/h -> unrestricted full power
+        ctrl.config.throttle_control_mode = 12;
+        inputs.wheel_speed_deci_kph = 450;
+        assert!(ctrl.step(&inputs, 10).target_current_ma > 25_000);
     }
 
     #[test]
     fn test_thermal_rollback_at_100c() {
         let mut ctrl = Dm01Controller::new(MotorConfig::default());
         ctrl.mode = RidingMode::Sport;
-        ctrl.assist_level = 5;
+        ctrl.assist = AssistSelection::Level(5);
 
         let mut inputs = default_inputs();
-        inputs.throttle_adc_mv = 3250; // Full throttle
+        inputs.throttle_adc_mv = 3250;
         inputs.controller_temp_c = 50;
         let normal = ctrl.step(&inputs, 10);
 
-        inputs.controller_temp_c = 102; // Exceeds 100C MaxTemp
+        inputs.controller_temp_c = 102; // Exceeds 100C MaxTemp(CTL)
         let overheated = ctrl.step(&inputs, 10);
 
         assert!(overheated.thermal_throttling);
         assert_eq!(overheated.target_current_ma, (normal.target_current_ma * 30) / 100);
     }
 }
-
