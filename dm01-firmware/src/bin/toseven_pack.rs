@@ -121,6 +121,87 @@ fn main() {
         return;
     }
 
+    // Handle "create" separately because it takes a target name instead of an input .Pack
+    if cmd == "create" {
+        if args.len() < 5 {
+            eprintln!("Usage: toseven_pack create <dm01|dm02> <payload.bin> <output.Pack>");
+            process::exit(1);
+        }
+        let target_str = args[2].to_ascii_lowercase();
+        let payload_path = &args[3];
+        let out_pack_path = &args[4];
+
+        let target = match target_str.as_str() {
+            "dm01" => MotorTarget::Dm01,
+            "dm02" => MotorTarget::Dm02,
+            _ => {
+                eprintln!("Target must be 'dm01' or 'dm02'");
+                process::exit(1);
+            }
+        };
+
+        let payload = match fs::read(payload_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error reading payload '{}': {}", payload_path, e);
+                process::exit(1);
+            }
+        };
+
+        if payload.len() < 8 {
+            eprintln!("Payload too small to contain a valid ARM Cortex-M vector table");
+            process::exit(1);
+        }
+
+        let initial_sp = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let reset_handler = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        println!("Payload Vector Table: MSP=0x{initial_sp:08X}, Reset=0x{reset_handler:08X}");
+
+        let (hdr_key, payload_key) = target.default_keys();
+        let device_id: u32 = match target {
+            MotorTarget::Dm01 => 0x8119_6EA4,
+            MotorTarget::Dm02 => 0x8119_6EA3,
+            MotorTarget::Unknown(id) => id,
+        };
+
+        // Construct 34-byte decrypted header
+        let mut dec_hdr = [0u8; PACK_HEADER_LEN];
+        let dev_bytes = device_id.to_le_bytes();
+        dec_hdr[0..4].copy_from_slice(&dev_bytes);
+        dec_hdr[16..20].copy_from_slice(&PACK_HEADER_MAGIC);
+        let len_bytes = (payload.len() as u16).to_le_bytes();
+        dec_hdr[24] = len_bytes[0];
+        dec_hdr[25] = len_bytes[1];
+
+        let meta = dm01_firmware::pack::PackMetadata {
+            target,
+            device_id_24: device_id & 0x00FF_FFFF,
+            header_xor_key: hdr_key,
+            payload_xor_key: payload_key,
+            payload_len: payload.len(),
+            initial_sp,
+            reset_handler,
+            decrypted_header: dec_hdr,
+        };
+
+        let mut out_pack = [0u8; PACK_FILE_SIZE];
+        if let Err(e) = repack_firmware(&meta, &payload, None, &mut out_pack) {
+            eprintln!("Error packing firmware: {:?}", e);
+            process::exit(1);
+        }
+
+        if let Err(e) = fs::write(out_pack_path, out_pack) {
+            eprintln!("Error writing output .Pack '{}': {}", out_pack_path, e);
+            process::exit(1);
+        }
+
+        println!(
+            "Successfully created .Pack container: '{}' ({} bytes, Target: {:?})",
+            out_pack_path, PACK_FILE_SIZE, target
+        );
+        return;
+    }
+
     let pack_path = &args[2];
     let raw_pack = match fs::read(pack_path) {
         Ok(b) => b,
