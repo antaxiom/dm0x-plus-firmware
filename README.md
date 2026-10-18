@@ -1,33 +1,109 @@
-# ToSeven DM01 Open Firmware (`dm01-firmware`)
+# DM+ : Open Mid-Drive Firmware & Tooling Studio
 
-[![CI](https://github.com/alouk/toseven-firmware/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/antaxiom/dm0x-plus-firmware/actions/workflows/ci.yml/badge.svg)](https://github.com/antaxiom/dm0x-plus-firmware/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B%20%7C%20%23!%5Bno__std%5D-orange.svg)](dm01-firmware/Cargo.toml)
 [![Target](https://img.shields.io/badge/target-ARM%20Cortex--M4F-blue.svg)](https://developer.arm.com/Processors/Cortex-M4)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An open-source, `#![no_std]` Embedded Rust firmware recompilation, container toolchain, and customization engine for **ToSeven (TO7) DM01** mid-drive e-bike motors (with DM02 and DM0X displays on the roadmap).
+An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlocking toolchain, and cross-platform desktop studio for **ToSeven (TO7)** mid-drive e-bike motors (DM01, DM02) and handlebar displays (T24V, T154, M15, LCD135C).
+
+> [!NOTE]
+> **DM+** is the current working project name for this unified firmware and tooling ecosystem. Naming may evolve as the project expands to additional motor controllers and displays.
 
 ---
 
-## Project Vision: Unified Firmware & Smart Display Ecosystem
+## What Is Implemented Right Now (`v0.3.0-beta.2`)
 
-Most e-bike firmware mods force riders into a frustrating cycle: disconnect the bike, plug in a programming cable, run a proprietary PC flashing utility, tweak a number, re-flash, test ride, and repeat.
+Rather than relying on future promises, here is the verified functionality available today in this repository:
 
-**Our goal is to build an open, unified "Mega Firmware" paired with updated display firmware:**
-1. **Flash Once:** Flash the open motor controller firmware onto the DM01 once.
-2. **Handlebar Control:** Configure all motor behaviors directly through the on-bike display menu (`LCD135C`, `T24V`, `T154`, `M15`) or smartphone via Bluetooth.
-3. **Dynamic Tuning via UART:** Settings are communicated over the ToSeven UART protocol and saved directly into Flash EEPROM (`0x0801FC00`).
-4. **On-the-Fly Profile Switching:** Toggle between smooth commuting, progressive trail riding, or uncapped climbing power at the push of a handlebar button.
+1. **DM+ Firmware Studio Desktop GUI (`dm-plus-gui`):**
+   - Native cross-platform desktop application built with Slint and Rust.
+   - Built-in embedded DM01 Open Firmware container (`128 KB`) for instant, standalone flashing.
+   - Native system file pickers (`rfd`) with enforced extension filters (`.Pack` and `.hex`).
+   - Non-blocking asynchronous flashing engine with serial connection timeouts.
+   - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
+
+2. **Display Lockout Patcher & ISP Flasher (`toseven_pack display`):**
+   - Automatically parses Intel HEX display firmware dumps (`T24V`, `T154`, `LCD135C`, `M15`).
+   - Detects and neutralizes all 6 restriction branch gates introduced in the post-October 2024 factory firmware with ARM Thumb NOP (`0x00BF`) patches.
+   - Restores permanent access to `Speed&Power`, maximum current limits, and wheel circumference menus.
+   - Flashes patched display firmware directly over USB CDC using the MegaHunt ISP bootloader protocol.
+
+3. **Motor Controller `.Pack` Container Engine (`toseven_pack`):**
+   - Automatic XOR key detector (`0xA8`/`0x67` for DM01, `0xF7`/`0xE2` for DM02).
+   - Bit-exact unpacking and repacking verified against official factory releases.
+   - Natively extracts loadable segments directly from Cortex-M ELF binaries and packages them into official 128 KB `.Pack` containers without requiring host `objcopy`.
+
+4. **Clean-Room Motor Controller Architecture (`dm01-firmware`):**
+   - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time clamps ($[6.0\%, 94.0\%]$), and Hall observer.
+   - Complete 3-stage power curve pipeline modeled after the decompiled `V6510C` integer math.
+   - Source-level tuning profiles: uncapped cadence, progressive quadratic torque response, and unified level assist ceilings.
+   - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16.
+   - Standalone bare-metal Cortex-M4F binary (`dm01_firmware`) with dedicated vector table, peripheral register mappings (`pac.rs`), and safe High-Z gate-driver hardware drivers (`hal.rs`).
+
+5. **Physical Simulation & Verification Suite:**
+   - 45 automated unit, integration, and end-to-end physical simulation tests running in CI.
+   - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
+
+6. **Safety & Bench Bring-up Runbook:**
+   - Comprehensive bench bring-up guide ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md)) detailing Julet harness pinouts, SWD recovery points, and 48V current-limited bench power supply procedures.
 
 ---
 
-## Improvements & Advancements in Open Firmware (`v0.3.0`)
+## Clean-Room Reimplementation & AI-Assisted Engineering
 
-Compared to proprietary factory firmware (`V6510C`), the open `#![no_std]` firmware introduces major architectural, safety, and ride-feel enhancements while maintaining 100% hardware compatibility:
+### Methodology & Architecture
+This project is a **100% clean-room reimplementation** written in memory-safe, modern `#![no_std]` Rust. 
 
-| Feature / Subsystem | Stock Factory Firmware (`V6510C`) | Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
+- **Decompilation-Informed Architecture:** The algorithmic structure, register offsets, communication framing, and EEPROM layouts were uncovered through rigorous binary decompilation and static analysis (ARM Cortex-M4F disassemblies) of stock factory releases (including `V6510C`).
+- **No Proprietary Code Reuse:** No vendor C code, proprietary assembly routines, or closed-source libraries are included or copied. Instead, every mathematical equation, lookup table, filter, and state machine was documented in human-readable terms and rewritten from scratch in idiomatic Rust with compile-time type safety.
+- **Asset Isolation:** All proprietary manufacturer assets (`.Pack` containers, `.hex` display dumps, APK tuning apps, and vendor manuals) are strictly isolated in a `.gitignore`d directory and cataloged solely by SHA-256 hashes in [`blobs/README.md`](blobs/README.md).
+
+### AI Ethics & Engineering Disclosure
+This codebase was developed with the assistance of advanced generative AI models, specifically **Google Gemini** (via Antigravity) and **Anthropic Claude**:
+- **Technical Role:** AI models were utilized as augmentative technical pair-programmers and analytical assistants to assist in reverse-engineering obfuscated ARM machine code, cross-referencing peripheral register maps against microcontrollers, translating decompiled math into safe Rust algorithms, and developing comprehensive simulation suites.
+- **Human Verification & Determinism:** Every algorithm, transform, register definition, and communication frame has been human-reviewed and verified against bit-exact roundtrips, cryptographic digests, and deterministic physical simulations.
+- **Ethical Purpose & Interoperability:** This work is conducted strictly for interoperability, research, safety improvements, and consumer right-to-repair. The project aims to eliminate artificial software lockouts, correct safety deficiencies, and provide riders with full control over the hardware they legitimately own.
+
+---
+
+## Community Inquiries & Technical Feedback
+
+We actively track feedback and technical inquiries from the e-bike community. Below are key technical topics raised regarding the core algorithms:
+
+### 1. Torque Sensor Dynamic Range & Auto-Zero Drift (GitHub Issue #1)
+- **Observation:** In physical testing, riders cannot mechanically deflect the DM01 torque strain gauge to the nominal $3.3\text{ V}$ ceiling (even steep hill climbing without motor assist yields a maximum of $\approx 2.7\text{ V}$, with typical hard efforts reaching $1.7\text{ V}$ to $2.0\text{ V}$). Furthermore, the resting zero-point voltage drifts thermally between $0.6\text{ V}$ and $0.9\text{ V}$.
+- **Stock Limitation:** The stock `V6510C` firmware normalizes rider effort against a static $3300\text{ mV}$ ceiling ($3300\text{ mV} - 700\text{ mV} = 2600\text{ mV}$ span), meaning riders rarely utilize more than $40\%\text{--}50\%$ of the configured assist range without artificial amplification.
+- **DM+ Approach:** In DM+, rider effort is calculated strictly from the dynamic span:
+  $$\Delta V_{\text{rider}} = V_{\text{applied}} - V_{\text{zero}}$$
+  We are evaluating auto-span calibration where $V_{\text{max}}$ automatically shifts with the tracked resting zero-point:
+  $$V_{\text{max}} = V_{\text{zero}} + V_{\text{span}}$$
+  allowing riders to reach 100% assist at a realistic mechanical pedal force.
+
+### 2. Low-Cadence Power vs. Nylon Primary Reduction Gear (GitHub Issue #2)
+- **Observation:** The DM01 internal primary reduction relies on a composite blue nylon helical gear. Delivering maximum current ($30\text{ A}$ / $\approx 1500\text{ W}$) at very low cadence ($< 20\text{ RPM}$) introduces extreme mechanical shear stress on the gear teeth, creating a risk of tooth stripping under heavy load.
+- **Stock Limitation:** Stock firmware penalizes low-cadence climbing with a rigid $\frac{\text{Cadence}}{60\text{ RPM}}$ multiplier, cutting power by 60% at 25 RPM. While this protects the plastic gear, it causes riders to stall on steep trail inclines.
+- **DM+ Approach:** Power delivery is decoupled into selectable, transparent tuning profiles:
+  - `Stock60Rpm`: Retains the conservative stock linear ramp for maximum mechanical longevity.
+  - `GearSafeKnee`: Provides full torque response down to $25\text{ RPM}$, with a protective soft torque ceiling below $20\text{ RPM}$ to shield the nylon gear from dead-stop shock loads.
+  - `Uncapped`: Delivers 100% requested torque assist down to $5\text{ RPM}$ for riders running reinforced all-metal gear sets or specialized applications.
+
+### 3. Battery LVC Cushion & True Zero-Current Cutoff (GitHub Issue #3)
+- **Observation:** The stock firmware features a $3.0\text{ V}$ reserve cushion above Low-Voltage Cutoff (LVC), but tapers current down to a $25\%$ floor rather than fully cutting off motor power. If an overloaded battery sags further, this $25\%$ residual draw can trigger a harsh, sudden BMS trip.
+- **DM+ Approach:** DM+ implements a true taper to $0.0\text{ A}$ anchored to the user's configured $0\%$ battery voltage threshold. Power tapers smoothly across the reserve band down to an absolute zero current cutoff at LVC, preventing cell over-discharge and sudden BMS shutdowns while riding.
+
+---
+
+## Detailed Documentation & Reference Guides
+
+<details>
+<summary><strong>Comparison: Stock Factory Firmware (V6510C) vs. DM+ Open Architecture</strong></summary>
+
+<br>
+
+| Feature / Subsystem | Stock Factory Firmware (`V6510C`) | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
 | :--- | :--- | :--- | :--- |
-| **Low-Cadence Climbing Power** | Strict $\frac{\text{Cadence}}{60\text{ RPM}}$ scaling; assist is cut by **60%** at 25 RPM (only 2.5 A / 125 W delivered) | **Uncapped Cadence Profile:** Delivers 100% requested torque assist at any cadence $\ge 5\text{ RPM}$ (6.2 A / 310 W at 25 RPM) | **2.5× more power on steep hill starts** from a dead stop without stalling or standing on pedals |
+| **Low-Cadence Climbing Power** | Strict $\frac{\text{Cadence}}{60\text{ RPM}}$ scaling; assist is cut by **60%** at 25 RPM (only 2.5 A / 125 W delivered) | **Selectable Profiles:** Gear-safe knee or uncapped cadence delivering full assist down to target RPM | Up to 2.5× more power on steep hill starts without stalling |
 | **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor **ignores** assist level `Pwr%` and uses only Mode Max | **Unified Level Ceiling Policy:** Optional profile enforcing that torque assist respects assist level `Pwr%` | True fine-grained battery conservation and level-separated power control |
 | **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, exponential boost on steep climbs | Natural, intuitive MTB trail feel; less leg strain for urban commuters |
 | **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes instantly to physical Hall pins; decays to zero velocity when stationary | Smooth, instantaneous takeoff without jerky shudder or runaway assist |
@@ -35,35 +111,51 @@ Compared to proprietary factory firmware (`V6510C`), the open `#![no_std]` firmw
 | **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to $[6.0\%, 94.0\%]$ ($1.5\,\mu\text{s}$ margin) | Eliminates high-side/low-side FET shoot-through risk under heavy transients |
 | **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous 0 ms High-Z Shutdown:** Brake lever (`PB12`), backpedaling, Hall fault (`0b000`/`0b111`), or gear shift sensor | Immediate motor disengagement for maximum rider safety |
 | **Thermal Protection** | Sudden cliff or delayed step reduction | **Smooth Continuous Linear Rollback:** Continuous linear derating from 70°C down to 0.0 A at 100°C | No jarring sudden loss of power; keeps motor running smoothly while cooling |
-| **Battery LVC Cushion** | Fixed 3.0V cushion (39V..42V) regardless of pack chemistry | **Cell-Aware Proportional Cushion & Sag Filter:** 3.0V linear taper down to 25% current before hard BMS cutoff | Prevents abrupt battery BMS shutdowns under heavy hill climbing or acceleration |
+| **Battery LVC Cushion** | Fixed 3.0V cushion (39V..42V) tapering down to 25% current floor | **Cell-Aware Proportional Cushion & True 0A Taper:** Linear taper down to 0.0 A at LVC | Prevents abrupt battery BMS shutdowns under heavy hill climbing or acceleration |
 | **Multi-Voltage Adaptability** | Hardcoded 50.0V constant-power cap; poor 36V / 52V optimization | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages without bricking |
 | **Display Compatibility** | Post-October 2024 menu lockouts lock users out of settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15` | Regain full access to `Speed&Power`, current limits, and wheel circumference |
-| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`):** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, live telemetry | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
+| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
 
----
+</details>
 
-## Quickstart & Tooling Guide
+<details>
+<summary><strong>DM+ Firmware Studio Desktop GUI & macOS Gatekeeper Guide</strong></summary>
 
-### Prerequisites
-- [Rust toolchain](https://rustup.rs/) (stable, 1.75+)
+<br>
 
-### Running Unit & Integration Tests
+**DM+ Firmware Studio** (`dm-plus-gui`) is a native desktop application built with [Slint](https://slint.dev/) and backed directly by the `dm01-firmware` crate.
+
 ```bash
-# Run all 45 unit, integration, and physical simulation tests
-cargo test --workspace
+# Launch the desktop studio from source
+cargo run --manifest-path dm-plus-gui/Cargo.toml
 
-# Run physical simulation suite (6 end-to-end scenarios)
-cargo test --manifest-path dm01-firmware/Cargo.toml --test simulation_suite -- --nocapture
-
-# Check formatting and strict clippy lints across workspace
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-
-# Verify strict #![no_std] bare-metal embedded compatibility
-cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
+# Package local release archives (CLI + GUI) into dist/
+./scripts/package-release.sh
 ```
 
-### Using the `toseven_pack` Container Tool
+### Opening on macOS (Gatekeeper & Privacy Restrictions)
+
+Because release binaries downloaded from GitHub are not signed with an Apple Developer Program certificate, macOS Gatekeeper may present a security prompt stating *"DM+ Firmware Studio.app cannot be opened because Apple cannot check it for malicious software"*.
+
+To open the application on macOS:
+1. **Finder Context Menu:** Right-click (or Control-click) `DM+ Firmware Studio.app` in Finder, select **Open**, and then click **Open** in the confirmation dialog.
+2. **System Settings:** Open **System Settings > Privacy & Security**, scroll down to the **Security** section, and click **Open Anyway**.
+3. **Terminal (Strip Quarantine):** Remove the quarantine attribute directly:
+   ```bash
+   xattr -cr "/path/to/DM+ Firmware Studio.app"
+   ```
+   For the standalone CLI binary:
+   ```bash
+   xattr -c toseven_pack && chmod +x toseven_pack
+   ```
+
+</details>
+
+<details>
+<summary><strong>CLI Tooling Reference (<code>toseven_pack</code>)</strong></summary>
+
+<br>
+
 ```bash
 # Inspect container metadata, vector table, and factory EEPROM
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info <firmware.Pack>
@@ -79,9 +171,6 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy
 
 # Package directly from ELF into official ToSeven .Pack firmware container
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
-
-# Inspect the generated .Pack container
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info build/TO7-DM01-OpenFirmware-v0.3.0.Pack
 
 # Cryptographically verify container integrity and bit-exact round-trip
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify <firmware.Pack>
@@ -113,104 +202,31 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- simulat
 
 # List connected USB serial adapters and displays
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
-
-# Launch DM+ Firmware Studio Desktop GUI (Slint)
-cargo run --manifest-path dm-plus-gui/Cargo.toml
 ```
 
----
+</details>
 
-## DM+ Firmware Studio (Slint Desktop GUI)
+<details>
+<summary><strong>Hardware Specifications, Pinouts & Bring-up Runbook</strong></summary>
 
-**DM+ Firmware Studio** (`dm-plus-gui`) is a native, cross-platform graphical desktop application built with [Slint](https://slint.dev/) and powered directly by the `dm01-firmware` engine:
+<br>
 
-```bash
-# Launch the desktop studio from source
-cargo run --manifest-path dm-plus-gui/Cargo.toml
-
-# Package local release archives (CLI + GUI) into dist/
-./scripts/package-release.sh
-```
-
-### Multi-Platform Release Toolchain
-- **Automated Matrix CI/CD (`.github/workflows/release.yml`)**: Builds native binaries for **Linux (x86_64)**, **macOS Universal (Apple Silicon + Intel)**, and **Windows (x64)** without local cross-compilation overhead.
-- **Local Host Packager (`scripts/package-release.sh`)**: Builds and bundles the current host's CLI archive and Desktop app (`.app` on macOS, `.tar.gz` on Linux) into `dist/` with SHA-256 checksums.
-
-### Opening on macOS (Gatekeeper & Privacy Restrictions)
-
-Because release binaries downloaded from GitHub are not signed with an Apple Developer Program certificate, macOS Gatekeeper may show a security notice such as *"DM+ Firmware Studio.app cannot be opened because Apple cannot check it for malicious software"* or *"developer cannot be verified"*.
-
-To open the application on macOS:
-1. **Finder Context Menu:** Right-click (or Control-click) `DM+ Firmware Studio.app` in Finder, select **Open**, and then click **Open** in the confirmation dialog.
-2. **System Settings:** Open **System Settings > Privacy & Security**, scroll down to the **Security** section, and click **Open Anyway**.
-3. **Terminal (Strip Quarantine):** Remove the quarantine attribute directly:
-   ```bash
-   xattr -cr "/path/to/DM+ Firmware Studio.app"
-   ```
-   For the standalone CLI binary:
-   ```bash
-   xattr -c toseven_pack && chmod +x toseven_pack
-   ```
-
-### Architectural Design & Decoupling
-1. **Core Decoupling:** All business logic, container ciphers, Intel HEX manipulations, and serial state machines reside in `dm01-firmware` (`display_patcher.rs`, `flasher.rs`, `serial.rs`, `pack.rs`).
-2. **GUI Framework Architecture:**
-   - **Slint:** Pure Rust declarative UI framework providing native styling, sub-millisecond startup, minimal binary footprint, and seamless cross-platform desktop integration directly backed by the `dm01-firmware` crate.
-3. **Core GUI Features:**
-   - **Self-Contained Firmware:** The official DM01 Open Firmware container is embedded directly into the executable, requiring no external file lookups.
-   - **Native System File Pickers:** Uses native OS dialogs (`rfd`) with enforced extension filters (`.Pack` for motor controllers, `.hex` for displays).
-   - **Non-Blocking Serial I/O:** Flashing runs on background worker threads with connection timeouts to keep the interface fully responsive.
-   - **One-Click Unlock:** Select any locked display `.hex` file to automatically neutralize all 6 post-October 2024 restriction gates.
-
----
-
-## Hardware Feasibility & Roadmap to Initial Release
-
-### Can this compile into something that will run on the bike right now?
-**Display firmware unlocking & flashing (`toseven_pack display patch/flash`) and stock motor `.Pack` flashing are ready for hardware today.** The custom bare-metal Cortex-M4F motor firmware (`dm01_firmware`) also compiles cleanly into a standalone ELF and packages into an official 128 KB `.Pack` container, with `TIM1` booting safely in High-Z (`MOE = 0`, 50% neutral duty). However, **do not flash the custom bare-metal motor firmware onto a live bike yet**: multi-channel DMA/ADC scan sequencing, `TIM1_UP` ISR timing, and UART ISR wiring in `hal.rs` / `firmware.rs` still require verification on a **48V current-limited bench power supply** in Phase 3.
-
-```
-[Phase 1: Algorithmic Core]       [Done] (FOC, Power Curves, EEPROM, Pack Tooling)
-            │
-[Phase 2.1: Hardware Binding]     [Done] (Volatile PAC, Safe High-Z TIM1 PWM, Hall+PLL, memory.ld)
-            │
-[Phase 2.2: Standalone .Pack]     [Done] (Native ELF extraction, 128 KB .Pack, Live Serial & Monitor)
-            │
-[Phase 3: Bench Verification]     [In Progress] (ADC DMA scan sequencing + 48V current-limited bench test)
-            │
-[Phase 4: Public v1.0 Release]    [Planned] (Initial DM01 Open Firmware Release)
-```
-
-### What was completed in Phase 2?
-
-1. **Hardware Pin & Register Extraction ([`Documentation/DM01_Hardware_Specification.md`](Documentation/DM01_Hardware_Specification.md)):**
-   - 100% extracted from decompiled vendor assembly without depotting silicone potting compound.
-   - Core: ARM Cortex-M4F with hardware single-precision FPU enabled (`SCB->CPACR`).
-   - `TIM1` (`0x40012C00`): Center-aligned 16 kHz complementary 6-FET PWM (`ARR = 5999`, `DTG = 100` ≈ 1.38 µs dead-time). High-side: `PA8, PA9, PA10`. Low-side: `PB13, PB14, PB15`. Break: `PB12`.
-   - `ADC1/ADC2` (`0x40012400` / `0x40012800`): Dual injected sequence for Shunts U (`PA0`), V (`PA1`), and derived W. Regular channels: Shunt/Bus (`PA1`), Torque strain gauge (`PA4`), Throttle (`PA7`), Battery voltage (`PB0`), Temperature (`PB1`).
-   - `USART3` (`0x40004800`): Display UART at **9600 Baud** (8-N-1), TX on `PB10`, RX on `PB11`, wire XOR `0x69`.
-2. **Peripheral Access Crate (`pac.rs`) & HAL (`hal.rs`):**
-   - Implemented zero-cost register structs and safe hardware accessors.
-   - `Dm01PwmHardware`: Configures `TIM1` for 16 kHz complementary PWM with dead-time and provides atomic duty updates and emergency High-Z shutoff.
-   - `Dm01SensorsHardware`: Samples ADC channels and Hall rotor bits.
-3. **Linker Script (`memory.ld`) & Vector Table:**
-   - Vector table placed at Flash origin `0x08001800` above the 6 KB factory bootloader with `SCB->VTOR` relocation.
-   - Initial MSP set to `0x20005628`, matching stock ToSeven DM01 specifications.
-4. **Native ELF Extraction & `.Pack` Packaging:**
-   - `toseven_pack` natively extracts loadable Flash segments directly from Cortex-M ELF binaries without external host tools (`objcopy`).
+### Extracted Hardware Architecture ([`Documentation/DM01_Hardware_Specification.md`](Documentation/DM01_Hardware_Specification.md))
+- **Processor:** ARM Cortex-M4F with hardware single-precision FPU enabled (`SCB->CPACR`).
+- **PWM Timer (`TIM1` at `0x40012C00`):** Center-aligned 16 kHz complementary 6-FET PWM (`ARR = 5999`, `DTG = 100` ≈ 1.38 µs dead-time). High-side: `PA8, PA9, PA10`. Low-side: `PB13, PB14, PB15`. Emergency Break input: `PB12`.
+- **Analog Subsystem (`ADC1/ADC2`):** Dual injected simultaneous sequence for Shunt U (`PA0`), Shunt V (`PA1`), and derived Shunt W. Regular scanned channels: Bus voltage (`PB0`), Strain gauge torque sensor (`PA4`), Throttle (`PA7`), Motor thermistor (`PB1`).
+- **UART (`USART3` at `0x40004800`):** Display bus running at 9600 Baud (8-N-1), TX on `PB10`, RX on `PB11`, with symmetric wire XOR `0x69` stream cipher.
 
 ### Safety Verification Before Physical On-Bike Testing
+- **Bench Power Supply Limits:** Before connecting to a live high-current battery pack, inverter gate drivers must be tested on a bench power supply strictly current-clamped to $\le 1.0\text{ A}$ at $48\text{ V}$.
+- **Complete Runbook:** Follow the step-by-step bring-up guide in [`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md) covering harness pinouts, SWD debug connections, and phased bring-up checks.
 
-- **Bench Testing & Hardware Bring-up Runbook:**
-  - Follow the complete safety runbook in [`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md).
-  - Before flashing to a motor connected to a high-current battery pack, inverter gate drivers must be tested on a bench power supply strictly clamped to $\le 1.0\text{ A}$ at $48\text{ V}$.
-  - *Rationale:* Ensures gate driver timing and complementary PWM prevent shoot-through without stressing FETs.
-- **SWD Recovery:**
-  - Maintain an ST-Link/J-Link connection to SWDIO/SWCLK/GND on the controller PCB to guarantee unbrick recovery.
+</details>
 
----
+<details>
+<summary><strong>Repository Directory Layout</strong></summary>
 
-## Repository Structure
+<br>
 
 ```text
 ├── dm01-firmware/           # Core #![no_std] Rust firmware crate & CLI
@@ -235,6 +251,7 @@ To open the application on macOS:
 │       ├── simulation_suite.rs # 6 end-to-end comparative physical ride scenarios
 │       └── stock_identity.rs   # Bit-exact stock roundtrip & tuning tests
 ├── dm-plus-gui/             # DM+ Firmware Studio desktop GUI (Slint)
+│   ├── assets/              # Embedded standalone open firmware .Pack
 │   ├── ui/
 │   │   └── appwindow.slint  # Dark GTK4/Libadwaita desktop interface
 │   └── src/
@@ -259,22 +276,60 @@ To open the application on macOS:
 └── README.md                # Project overview and roadmap (this file)
 ```
 
+</details>
+
+<details>
+<summary><strong>Project Vision & Future Roadmap (Unified Mega-Firmware)</strong></summary>
+
+<br>
+
+Most e-bike firmware modifications force riders into a frustrating loop: disconnect the bike, connect a programming cable, run a proprietary flashing tool, adjust a setting, re-flash, test ride, and repeat.
+
+Our long-term architectural goal is to build an open, unified motor and display ecosystem:
+1. **Flash Once:** Flash the open motor controller firmware onto the motor once.
+2. **Handlebar Control:** Configure motor behaviors directly through the on-bike display menu (`LCD135C`, `T24V`, `T154`, `M15`) or smartphone via Bluetooth.
+3. **Dynamic Tuning via UART:** Settings are communicated over the ToSeven UART protocol and saved directly into Flash EEPROM (`0x0801FC00`).
+4. **On-the-Fly Profile Switching:** Toggle between smooth commuting, progressive trail riding, or uncapped climbing power at the push of a handlebar button.
+
+```
+[Phase 1: Algorithmic Core]       [Done] (FOC, Power Curves, EEPROM, Pack Tooling)
+            │
+[Phase 2.1: Hardware Binding]     [Done] (Volatile PAC, Safe High-Z TIM1 PWM, Hall+PLL, memory.ld)
+            │
+[Phase 2.2: Standalone .Pack]     [Done] (Native ELF extraction, 128 KB .Pack, Live Serial & Monitor)
+            │
+[Phase 3: Bench Verification]     [In Progress] (ADC DMA scan sequencing + 48V current-limited bench test)
+            │
+[Phase 4: Public v1.0 Release]    [Planned] (Initial DM01 Open Firmware Release)
+```
+
+</details>
+
+---
+
+## Contributing & Community
+
+Contributions are welcome from developers, e-bike builders, and riders! Key areas where help is needed:
+
+1. **Hardware Bench Testing (Phase 3):**
+   - Oscilloscope validation of gate driver dead-time and complementary PWM switching on bench power supplies ($\le 1.0\text{ A}$ current limit).
+   - Validation of multi-channel ADC DMA sequencing (`Shunt U/V`, `Torque`, `Throttle`, `V_bat`, `Temp`).
+2. **Display Firmware Verification:**
+   - Testing unlocked `.hex` firmware on different display hardware revisions (`T24V`, `T154`, `M15`, `LCD135C`).
+   - Extracting and documenting additional display models and Bluetooth module firmwares.
+3. **DM02 Motor Controller Validation:**
+   - Testing and confirming `.Pack` container repacking and EEPROM block formatting for DM02 (`TS500W`).
+4. **Code Quality Standards:**
+   - Retain strict `#![no_std]` embedded compatibility for core controller modules in `dm01-firmware`.
+   - Ensure all code passes `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
+   - Include unit tests or simulation scenarios covering any modified power curve or state machine logic.
+
 ---
 
 ## Clean-Room & Legal Notice
 
-This project is a clean-room reverse-engineering, documentation, and open-source re-implementation effort created strictly for interoperability, research, and educational purposes.
+This project is a clean-room reverse-engineering, documentation, and open-source re-implementation effort created strictly for interoperability, research, safety, and educational purposes.
 
 - No proprietary binaries, copyrighted vendor manuals, or closed-source code are distributed in this repository.
 - All proprietary `.Pack` files, `.hex` display dumps, and vendor APKs remain the property of their respective owners and are isolated in `.gitignore`d storage as detailed in [`blobs/README.md`](blobs/README.md).
 - Flashing custom firmware to any motor controller carries inherent electrical and mechanical risks. Use at your own risk.
-
----
-
-## Contributing
-
-Contributions are welcome! Please ensure all code additions:
-1. Retain strict `#![no_std]` embedded compatibility for core controller modules.
-2. Pass `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
-3. Include unit tests covering any new power curve or state machine logic.
-
