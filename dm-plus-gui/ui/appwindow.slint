@@ -210,12 +210,14 @@ export component MainWindow inherits Window {
             padding-left: 24px;
             padding-right: 24px;
             spacing: 16px;
+            alignment: start;
 
             // ==========================================
             // VIEW 1: MOTOR CONTROLLER FLASHER & TUNING
             // ==========================================
             if root.active-tab == 0: VerticalLayout {
                 spacing: 16px;
+                alignment: start;
 
                 // Firmware Source Selection Card
                 AdwCard {
@@ -292,7 +294,8 @@ export component MainWindow inherits Window {
                     // Left Card: Hardware & Tuning Profile
                     AdwCard {
                         horizontal-stretch: 1;
-                        min-width: 0;
+                        min-width: 0px;
+                        preferred-width: 0px;
                         VerticalLayout {
                             padding: 16px;
                             spacing: 12px;
@@ -339,17 +342,24 @@ export component MainWindow inherits Window {
                                     current-value <=> root.tuning-profile;
                                     enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
                                 }
-                                Text {
-                                    text: root.tuning-profile == "Gear-Safe Progressive (Recommended)" ?
-                                        "Soft torque below 18 RPM protects nylon reduction gear; full power at 35 RPM with progressive curve." :
-                                        (root.tuning-profile == "Commuter Comfort (Auto-Span)" ?
-                                            "Dynamic auto-span tracking (nominal 2.3V) with high-sensitivity response for relaxed riding." :
-                                            (root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ?
-                                                "Warning: Immediate full torque at 5 RPM without attenuation. High risk of stripping nylon gear." :
-                                                "Stock factory linear torque response with standard 60 RPM cadence ramp."));
-                                    font-size: 11px;
-                                    color: root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ? #e01b24 : #9a9996;
-                                    wrap: word-wrap;
+                                Rectangle {
+                                    height: 32px;
+                                    clip: true;
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.tuning-profile == "Gear-Safe Progressive (Recommended)" ?
+                                            "Soft torque below 18 RPM protects nylon reduction gear; full power at 35 RPM with progressive curve." :
+                                            (root.tuning-profile == "Commuter Comfort (Auto-Span)" ?
+                                                "Dynamic auto-span tracking (nominal 2.3V) with high-sensitivity response for relaxed riding." :
+                                                (root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ?
+                                                    "Warning: Immediate full torque at 5 RPM without attenuation. High risk of stripping nylon gear." :
+                                                    "Stock factory linear torque response with standard 60 RPM cadence ramp."));
+                                        font-size: 11px;
+                                        color: root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ? #e01b24 : #9a9996;
+                                        wrap: word-wrap;
+                                        vertical-alignment: top;
+                                    }
                                 }
                             }
 
@@ -376,7 +386,8 @@ export component MainWindow inherits Window {
                     // Right Card: Battery & Electrical Limits
                     AdwCard {
                         horizontal-stretch: 1;
-                        min-width: 0;
+                        min-width: 0px;
+                        preferred-width: 0px;
                         VerticalLayout {
                             padding: 16px;
                             spacing: 12px;
@@ -439,11 +450,18 @@ export component MainWindow inherits Window {
                                     font-weight: 500;
                                     color: #deddda;
                                 }
-                                Text {
-                                    text: "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion with True Zero cutoff, and 500ms Hardware Watchdog (IWDG) are automatically active.";
-                                    font-size: 11px;
-                                    color: #9a9996;
-                                    wrap: word-wrap;
+                                Rectangle {
+                                    height: 32px;
+                                    clip: true;
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion with True Zero cutoff, and 500ms Hardware Watchdog (IWDG) are automatically active.";
+                                        font-size: 11px;
+                                        color: #9a9996;
+                                        wrap: word-wrap;
+                                        vertical-alignment: top;
+                                    }
                                 }
                             }
                         }
@@ -551,8 +569,9 @@ export component MainWindow inherits Window {
             // ==========================================
             if root.active-tab == 1: VerticalLayout {
                 spacing: 16px;
+                alignment: start;
 
-                // Display Firmware Card (Input, Model/Lockout Inspection & Save Patched)
+                // Card 1: Display Firmware Selection & Inspection
                 AdwCard {
                     VerticalLayout {
                         padding: 16px;
@@ -589,45 +608,76 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Inspection Badges Row & Secondary "Save Patched" button
+                        // Inspection Badges Row
                         HorizontalLayout {
-                            alignment: space-between;
-
+                            spacing: 24px;
                             HorizontalLayout {
-                                spacing: 24px;
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "Target Model:";
-                                        font-size: 13px;
-                                        font-weight: 500;
-                                        color: #9a9996;
-                                    }
-                                    Text {
-                                        text: root.display-model-name;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                        color: #ffffff;
-                                    }
+                                spacing: 6px;
+                                Text {
+                                    text: "Target Model:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #9a9996;
                                 }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "Lockout Status:";
-                                        font-size: 13px;
-                                        font-weight: 500;
-                                        color: #9a9996;
-                                    }
-                                    Text {
-                                        text: root.display-lockout-status;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                        color: root.display-is-locked ? #e01b24 : #2ec27e;
-                                    }
+                                Text {
+                                    text: root.display-model-name;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: #ffffff;
                                 }
                             }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Lockout Status:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #9a9996;
+                                }
+                                Text {
+                                    text: root.display-lockout-status;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: root.display-is-locked ? #e01b24 : #2ec27e;
+                                }
+                            }
+                        }
+                    }
+                }
 
-                            // Secondary button to save a patched copy directly to disk
+                // Card 2: Lockout Analysis & Offline Patching
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "Display Lockout Analysis & Clean Patcher";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        Text {
+                            text: "Neutralizes all 6 restriction branch gates (ARM Thumb NOP 0x00BF) introduced in post-October 2024 factory firmware (T24V, T154, LCD135C, M15). Restores speed limit configuration up to 60 km/h, enables 12-32 inch wheel sizing, unlocks engineering menus, and enables throttle assist without modifying graphics or calibration tables.";
+                            font-size: 12px;
+                            color: #9a9996;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.display-is-locked ?
+                                        "Click to generate an unlocked, restriction-free Intel HEX file." :
+                                        (root.display-hex-path != "" ? "Firmware has no active lockout restrictions." : "Select a firmware file above to inspect and patch.");
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: root.display-is-locked ? #e5a50a : #9a9996;
+                                }
+                            }
                             AdwButton {
                                 text: "Save Patched .hex...";
                                 enabled: root.display-hex-path != "";
