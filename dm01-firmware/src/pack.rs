@@ -92,7 +92,9 @@ pub fn parse_pack_metadata(pack_bytes: &[u8]) -> Result<PackMetadata, PackError>
         i += 1;
     }
 
-    if decrypted_header[16..20] != PACK_HEADER_MAGIC {
+    // The signature bytes at offset 17..19 are constant 0xE6, 0x40 across all ToSeven versions,
+    // while byte 16 indicates build sequence (0x2D..0x8A) and byte 19 indicates package type (0xAA/0x00/0xF4).
+    if decrypted_header[17..19] != [0xE6, 0x40] {
         return Err(PackError::InvalidHeaderMagic);
     }
 

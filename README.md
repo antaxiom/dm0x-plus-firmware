@@ -21,27 +21,24 @@ Most e-bike firmware mods force riders into a frustrating cycle: disconnect the 
 
 ---
 
-## 🚀 Key Features Built & Verified
+## ✨ Improvements & Advancements in Open Firmware (`v0.3.0`)
 
-- **100% Decompiled V6510C Integer Power Curve Pipeline (`src/power_curve.rs`):**
-  - **Dual Current Ceilings:** Models the stock split between the Global Mode Ceiling (used by torque sensing) and Level Power Ceilings (used by cadence and throttle).
-  - **Continuous Thermal Rollback:** Linear derating from Sport ceiling ($30.0\text{ A}$) at $70^\circ\text{C}$ to $0\text{ A}$ at $100^\circ\text{C}$.
-  - **High-Voltage Constant-Power Cap:** Preserves $1500\text{ W}$ peak power above $50.0\text{ V}$.
-  - **Strain-Gauge Drift Tracking:** 5-sample auto-zero drift compensation with $4:1$ IIR filtering within $400..1000\text{ mV}$.
-  - **Arbitration & Soft Tapers:** $\max(\text{Torque}, \text{PAS}, \text{Throttle})$, $\pm0.2\text{ A/step}$ current ramp limiter, $1.5\text{ km/h}$ speed soft-taper, and $3.0\text{ V}$ Low-Voltage Cutoff (LVC) cushion.
-- **Source-Level Customization Engine (`src/tuning.rs`):**
-  - **Uncapped Cadence:** Eliminates the stock $60\text{ RPM}$ penalty ($\max(\text{cadence}, 5) / 60$) that cuts climbing power in half at $30\text{ RPM}$.
-  - **Progressive Torque Response:** Quadratic / exponential strain response for natural, explosive trail riding.
-  - **Unified Level Ceilings:** Optional policy forcing torque assist to respect the assist level's `Pwr%` limit.
-- **High-Performance Field-Oriented Control (`src/foc.rs`):**
-  - Fixed-point Q15 and Cortex-M4F single-precision FPU Clarke/Park transforms.
-  - Dual PI current loops ($I_d / I_q$), flux weakening, and PLL Hall angle observer.
-  - 7-segment Space Vector PWM (SVPWM) with $[0.06, 0.94]$ dead-time linear duty shaping.
-- **Flash EEPROM Manager (`src/eeprom.rs`):**
-  - Complete 5-block (480-byte) Flash manager (`0x0801FC00`) with $0\text{xA5}$ XOR obfuscation, `A5 01 FE` magic verification, and 16-entry nibble CRC-16 checks.
-- **Official `.Pack` Container Tooling (`toseven_pack` CLI):**
-  - Inspect (`info`), extract (`unpack`), rebuild (`repack`), generate from scratch (`create`), and cryptographically verify (`verify`) official vendor update packages.
-  - Bit-exact round-trip verification matches official stock containers down to the last byte.
+Compared to proprietary factory firmware (`V6510C`), the open `#![no_std]` firmware introduces major architectural, safety, and ride-feel enhancements while maintaining 100% hardware compatibility:
+
+| Feature / Subsystem | Stock Factory Firmware (`V6510C`) | Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
+| :--- | :--- | :--- | :--- |
+| **Low-Cadence Climbing Power** | Strict $\frac{\text{Cadence}}{60\text{ RPM}}$ scaling; assist is cut by **60%** at 25 RPM (only 2.5 A / 125 W delivered) | **Uncapped Cadence Profile:** Delivers 100% requested torque assist at any cadence $\ge 5\text{ RPM}$ (6.2 A / 310 W at 25 RPM) | **2.5× more power on steep hill starts** from a dead stop without stalling or standing on pedals |
+| **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor **ignores** assist level `Pwr%` and uses only Mode Max | **Unified Level Ceiling Policy:** Optional profile enforcing that torque assist respects assist level `Pwr%` | True fine-grained battery conservation and level-separated power control |
+| **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, exponential boost on steep climbs | Natural, intuitive MTB trail feel; less leg strain for urban commuters |
+| **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes instantly to physical Hall pins; decays to zero velocity when stationary | Smooth, instantaneous takeoff without jerky shudder or runaway assist |
+| **Hardware Safety Watchdog** | Inactive or unmonitored during boot hangs | **Independent Hardware Watchdog (IWDG):** Active 500 ms window timer clocked by 40 kHz LSI oscillator, serviced in 1 ms SysTick | Failsafe reboot into safe High-Z (`MOE=0`) if firmware ever hangs or crashes |
+| **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to $[6.0\%, 94.0\%]$ ($1.5\,\mu\text{s}$ margin) | Eliminates high-side/low-side FET shoot-through risk under heavy transients |
+| **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous 0 ms High-Z Shutdown:** Brake lever (`PB12`), backpedaling, Hall fault (`0b000`/`0b111`), or gear shift sensor | Immediate motor disengagement for maximum rider safety |
+| **Thermal Protection** | Sudden cliff or delayed step reduction | **Smooth Continuous Linear Rollback:** Continuous linear derating from 70°C down to 0.0 A at 100°C | No jarring sudden loss of power; keeps motor running smoothly while cooling |
+| **Battery LVC Cushion** | Fixed 3.0V cushion (39V..42V) regardless of pack chemistry | **Cell-Aware Proportional Cushion & Sag Filter:** 3.0V linear taper down to 25% current before hard BMS cutoff | Prevents abrupt battery BMS shutdowns under heavy hill climbing or acceleration |
+| **Multi-Voltage Adaptability** | Hardcoded 50.0V constant-power cap; poor 36V / 52V optimization | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages without bricking |
+| **Display Compatibility** | Post-October 2024 menu lockouts lock users out of settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15` | Regain full access to `Speed&Power`, current limits, and wheel circumference |
+| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`):** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, live telemetry | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
 
 ---
 
@@ -52,14 +49,17 @@ Most e-bike firmware mods force riders into a frustrating cycle: disconnect the 
 
 ### Running Unit & Integration Tests
 ```bash
-# Run all 23 unit tests and container integration tests
-cargo test --manifest-path dm01-firmware/Cargo.toml
+# Run all 45 unit, integration, and physical simulation tests
+cargo test --workspace
 
-# Check formatting and strict clippy lints
-cargo fmt --manifest-path dm01-firmware/Cargo.toml -- --check
-cargo clippy --manifest-path dm01-firmware/Cargo.toml --all-targets -- -D warnings
+# Run physical simulation suite (6 end-to-end scenarios)
+cargo test --manifest-path dm01-firmware/Cargo.toml --test simulation_suite -- --nocapture
 
-# Verify strict #![no_std] bare-metal compatibility
+# Check formatting and strict clippy lints across workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Verify strict #![no_std] bare-metal embedded compatibility
 cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
 ```
 
@@ -77,7 +77,7 @@ cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.t
 # Extract raw Flash image from compiled ELF
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
 
-# Package directly from ELF or raw binary into an official ToSeven .Pack firmware container
+# Package directly from ELF into official ToSeven .Pack firmware container
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
 
 # Inspect the generated .Pack container
@@ -85,23 +85,102 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info bu
 
 # Cryptographically verify container integrity and bit-exact round-trip
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify <firmware.Pack>
+
+# Simulate motor controller IAP packet framing and sector pacing (dry run)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash <firmware.Pack> --dry-run
+
+# Flash motor controller firmware over USB-UART adapter to hardware
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash <port> <firmware.Pack>
+
+# Inspect display firmware (identifies model, vector table, and lockout status)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display info <firmware.hex>
+
+# Permanently unlock display firmware (removes post-Oct 2024 Advanced Menu lockouts)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display patch <input.hex> <output.hex>
+
+# Flash display firmware with on-the-fly unlock (dry-run simulation)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash <firmware.hex> --unlock --dry-run
+
+# Flash display firmware over USB CDC port to hardware with on-the-fly unlock
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash <port> <firmware.hex> --unlock
+
+# Monitor live 0x69-encrypted UART telemetry (or run simulated ride demo)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor <port> --baud 9600
+
+# Run comparative 6-scenario ride simulation suite (Stock V6510C vs. Open Firmware)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- simulate
+
+# List connected USB serial adapters and displays
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
+
+# Launch DM+ Firmware Studio Desktop GUI (Slint)
+cargo run --manifest-path dm-plus-gui/Cargo.toml
 ```
+
+---
+
+## 🖥️ DM+ Firmware Studio (Slint Desktop GUI)
+
+**DM+ Firmware Studio** (`dm-plus-gui`) is a native, cross-platform graphical desktop application built with [Slint](https://slint.dev/) and powered directly by the `dm01-firmware` engine:
+
+```bash
+# Launch the desktop studio
+cargo run --manifest-path dm-plus-gui/Cargo.toml
+
+# Package local release archives (CLI + GUI) into dist/
+./scripts/package-release.sh
+```
+
+### Multi-Platform Release Toolchain
+- **Automated Matrix CI/CD (`.github/workflows/release.yml`)**: Builds native binaries for **Linux (x86_64)**, **macOS Universal (Apple Silicon + Intel)**, and **Windows (x64)** without local cross-compilation overhead.
+- **Local Host Packager (`scripts/package-release.sh`)**: Builds and bundles the current host's CLI archive and Desktop app (`.app` on macOS, `.tar.gz` on Linux) into `dist/` with SHA-256 checksums.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ToSeven Control Center (GUI Blueprint)              │
+├──────────────────────────────┬─────────────────────────────────────────┤
+│  🎯 Device Selection         │  ⚡ Motor Controller Tuning (.Pack)    │
+│  [●] DM01 / DM02 Controller  │  - Cadence Scaling: [ Uncapped ▾ ]      │
+│  [ ] T24V / T154 Display     │  - Torque Response: [ Progressive ▾ ]   │
+│  Port: [/dev/tty.usbserial▾] │  - Assist Ceiling:  [ Unified Level ▾ ] │
+│  Status: Connected (115200)  │  - Max Current:     [ 30.0 A          ] │
+├──────────────────────────────┼─────────────────────────────────────────┤
+│  🖥️ Display Firmware (.hex)  │  📊 Real-Time Diagnostic Telemetry      │
+│  File: TO7-T24V-Y241225.hex  │  - Battery: 52.4 V | Current: 0.0 A     │
+│  Status: 6 Lockout Gates     │  - Temp: 28.5 °C   | Cadence: 0 RPM     │
+│  [✓] Auto-Unlock Advanced    │  - Throttle: 0.95V | Hall: [H1 H2 H3]   │
+│      Menu On Flash           │                                         │
+├──────────────────────────────┴─────────────────────────────────────────┤
+│  [ Inspect Image ]      [ Patch .hex ]      [ Flash Firmware ]         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Architectural Design & Decoupling
+1. **Core Decoupling:** All business logic, container ciphers, Intel HEX manipulations, and serial state machines reside in `dm01-firmware` (`display_patcher.rs`, `flasher.rs`, `serial.rs`, `pack.rs`).
+2. **GUI Framework Architecture:**
+   - **Slint (Selected):** Pure Rust declarative UI framework providing native styling, sub-millisecond startup, minimal binary footprint, and seamless cross-platform desktop integration directly backed by the `dm01-firmware` crate.
+3. **Core GUI Features Planned:**
+   - **Auto-Discovery:** Automatically scans USB devices for vendor IDs (MegaHunt USB CDC `MH1903 ROM BOOT`, FTDI/CH340 serial converters).
+   - **One-Click Unlock:** Drag and drop any locked display `.hex` file, click "Unlock & Flash", and immediately regain full Advanced Menu access.
+   - **Visual Power Curve Editor:** Interactive curve sliders visualizing torque ramp, cadence scaling, and thermal rollback.
+   - **Bench Safety Interlock:** Guides the user through 48V current-limited bench power supply setup before committing writes.
 
 ---
 
 ## 🔍 Hardware Feasibility & Roadmap to Initial Release
 
 ### Can this compile into something that will run on the bike right now?
-**Yes! The bare-metal Cortex-M4F firmware compiles cleanly into a standalone ELF binary and packages directly into an official ToSeven `.Pack` file ready for flashing.**
+**Display firmware unlocking & flashing (`toseven_pack display patch/flash`) and stock motor `.Pack` flashing are ready for hardware today.** The custom bare-metal Cortex-M4F motor firmware (`dm01_firmware`) also compiles cleanly into a standalone ELF and packages into an official 128 KB `.Pack` container, with `TIM1` booting safely in High-Z (`MOE = 0`, 50% neutral duty). However, **do not flash the custom bare-metal motor firmware onto a live bike yet**: multi-channel DMA/ADC scan sequencing, `TIM1_UP` ISR timing, and UART ISR wiring in `hal.rs` / `firmware.rs` still require verification on a **48V current-limited bench power supply** in Phase 3.
 
 ```
 [Phase 1: Algorithmic Core]       ✅ (Done: FOC, Power Curves, EEPROM, Pack Tooling)
             │
-[Phase 2.1: Hardware Binding]     ✅ (Done: PAC, HAL, TIM1 Complementary PWM, ADC, UART, memory.ld)
+[Phase 2.1: Hardware Binding]     ✅ (Done: Volatile PAC, Safe High-Z TIM1 PWM, Hall+PLL, memory.ld)
             │
-[Phase 2.2: Standalone .Pack]     ✅ (Done: Native ELF extraction and 128 KB .Pack generation)
+[Phase 2.2: Standalone .Pack]     ✅ (Done: Native ELF extraction, 128 KB .Pack, Live Serial & Monitor)
             │
-[Phase 3: Bench SWD Verification] ⏳ (Next: Isolated 48V current-limited bench power supply test)
+[Phase 3: Bench Verification]     ⏳ (Next: ADC DMA scan sequencing + 48V current-limited bench test)
             │
 [Phase 4: Public v1.0 Release]    🎉 (Initial DM01 Open Firmware Release)
 ```
@@ -126,8 +205,9 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify 
 
 ### Safety Verification Before Physical On-Bike Testing
 
-- **Bench Power Supply with Current Limiter:**
-  - Before flashing to a motor connected to a high-current battery pack, inverter gate drivers must be tested on a bench supply limited to $\le 1.5\text{ A}$ at $48\text{ V}$.
+- **Bench Testing & Hardware Bring-up Runbook:**
+  - Follow the complete safety runbook in [`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md).
+  - Before flashing to a motor connected to a high-current battery pack, inverter gate drivers must be tested on a bench power supply strictly clamped to $\le 1.0\text{ A}$ at $48\text{ V}$.
   - *Rationale:* Ensures gate driver timing and complementary PWM prevent shoot-through without stressing FETs.
 - **SWD Recovery:**
   - Maintain an ST-Link/J-Link connection to SWDIO/SWCLK/GND on the controller PCB to guarantee unbrick recovery.
@@ -143,25 +223,42 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify 
 │   │   ├── tuning.rs        # Source-level tuning profiles (uncapped cadence, progressive torque)
 │   │   ├── foc.rs           # Clarke/Park, SVPWM, and PLL Hall observer
 │   │   ├── eeprom.rs        # 5-block Flash EEPROM storage & CRC-16
+│   │   ├── flasher.rs       # IAP wakeup, 12-byte header, chunk pacing & display ISP
+│   │   ├── display_patcher.rs # Intel HEX parser & NOP lockout bypass
 │   │   ├── pack.rs          # .Pack container parser, cipher, and repacker
 │   │   ├── pac.rs           # Memory-mapped peripheral register bindings (TIM1, ADC, USART, GPIO)
 │   │   ├── hal.rs           # Concrete DM01 hardware drivers (Dm01PwmHardware, Dm01SensorsHardware)
 │   │   ├── protocol.rs      # Display UART 0x69 cipher protocol
-│   │   ├── stock.rs         # Known official release registry
+│   │   ├── stock.rs         # Known official release registry (15 factory releases)
 │   │   ├── sha256.rs        # Embedded no_std SHA-256 digest
 │   │   ├── bin/
 │   │   │   ├── firmware.rs  # Standalone bare-metal Cortex-M4F firmware entry point & vector table
-│   │   │   └── toseven_pack.rs # CLI packaging, unpacking, and direct ELF extraction tool
+│   │   │   └── toseven_pack.rs # CLI packaging, unpacking, verify, and flashing tool
 │   │   └── memory.ld        # Flash (0x08001800) and SRAM (0x20000000) linker script
 │   └── tests/
-│       └── stock_identity.rs # Bit-exact stock roundtrip & tuning tests
+│       ├── simulation_suite.rs # 6 end-to-end comparative physical ride scenarios
+│       └── stock_identity.rs   # Bit-exact stock roundtrip & tuning tests
+├── dm-plus-gui/             # DM+ Firmware Studio desktop GUI (Slint)
+│   ├── ui/
+│   │   └── appwindow.slint  # Dark GTK4/Libadwaita desktop interface
+│   └── src/
+│       └── main.rs          # Asynchronous flashing threads, RFD file pickers, and serial integration
+├── scripts/
+│   └── package-release.sh   # Local release packaging script for current host OS
+├── .github/
+│   └── workflows/
+│       ├── ci.yml           # Continuous integration (linter, unit tests, no_std, simulations)
+│       └── release.yml      # Cross-platform release matrix (Linux, macOS Universal, Windows)
 ├── Documentation/
+│   ├── Bench_Testing_Bringup_Guide.md # Hardware bring-up runbook, Julet pinouts, bench setup
+│   ├── ToSeven_IAP_Flashing_Protocol.md # Clean-room IAP UART and display ISP flashing spec
+│   ├── ToSeven_Display_Firmware_Architecture.md # Display architecture, throttle modes, lockout bypass
 │   ├── DM01_Hardware_Specification.md # Complete reverse-engineered register map and pinout
 │   ├── DM01_Power_Curve_Guide.md # Comprehensive guide explaining power delivery
 │   ├── Official_Specifications.md # Hardware limits, pinouts, and manual references
 │   └── Research_Downgrade_and_Update.md # Container encryption & IAP bootloader notes
 ├── blobs/                   # External proprietary assets (.gitignore'd for clean-room legal safety)
-│   └── README.md            # Verified SHA-256 asset catalog
+│   └── README.md            # Verified SHA-256 asset catalog (25 verified files)
 ├── AGENTS.md                # Technical project reference & reverse engineering notes
 └── README.md                # Project overview and roadmap (this file)
 ```

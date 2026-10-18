@@ -16,6 +16,24 @@ pub enum RidingMode {
     Sport,
 }
 
+impl RidingMode {
+    pub const fn to_wire_u8(self) -> u8 {
+        match self {
+            RidingMode::City => 0,
+            RidingMode::Eco => 1,
+            RidingMode::Sport => 2,
+        }
+    }
+
+    pub const fn from_wire_u8(val: u8) -> Self {
+        match val {
+            1 => RidingMode::Eco,
+            2 => RidingMode::Sport,
+            _ => RidingMode::City,
+        }
+    }
+}
+
 /// Active assistance gear selection, including special modes A (Auto), C (Climb), R (Reverse)
 /// documented on Page 4 of the T24 Display Manual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +136,38 @@ pub struct MotorHardwareConfig {
     pub start_max_count: u8,
     /// 6-step Hall commutation table.
     pub commute_table: [u8; 6],
+}
+
+impl MotorHardwareConfig {
+    pub const fn default_dm01() -> Self {
+        Self {
+            gear: MotorGearType::Gear,
+            pole_pairs: 4,
+            reduction_ratio_x100: 4027, // 40.27 : 1
+            angle_offset_deg: 0,
+            motor_constant: 100,
+            start_min_voltage_pct: 10,
+            start_max_voltage_pct: 35,
+            start_speed_rpm: 15,
+            start_max_count: 60,
+            commute_table: [1, 3, 2, 6, 4, 5],
+        }
+    }
+
+    pub const fn default_dm02() -> Self {
+        Self {
+            gear: MotorGearType::Gear,
+            pole_pairs: 4,
+            reduction_ratio_x100: 5300, // 53.00 : 1
+            angle_offset_deg: 0,
+            motor_constant: 100,
+            start_min_voltage_pct: 10,
+            start_max_voltage_pct: 35,
+            start_speed_rpm: 15,
+            start_max_count: 60,
+            commute_table: [1, 3, 2, 6, 4, 5],
+        }
+    }
 }
 
 /// Special FOC vector control parameters (`FOC Menu`, Page 15 of T24 Manual).

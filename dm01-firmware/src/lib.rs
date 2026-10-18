@@ -17,12 +17,14 @@
 //! - [`stock`] — Pinned SHA-256 hashes of known official `.Pack` releases.
 //! - [`sha256`] — Dependency-free `no_std` SHA-256.
 //! - [`config`], [`sensors`], [`control`], [`thermal`], [`battery`], [`faults`], [`hal`] — High-level hardware abstraction, telemetry, and motor controller state machines.
-
 pub mod battery;
 pub mod config;
 pub mod control;
+#[cfg(feature = "std")]
+pub mod display_patcher;
 pub mod eeprom;
 pub mod faults;
+pub mod flasher;
 pub mod foc;
 pub mod hal;
 pub mod pac;
@@ -30,7 +32,11 @@ pub mod pack;
 pub mod power_curve;
 pub mod protocol;
 pub mod sensors;
+#[cfg(feature = "std")]
+pub mod serial;
 pub mod sha256;
+#[cfg(feature = "std")]
+pub mod simulation;
 pub mod stock;
 pub mod thermal;
 pub mod tuning;

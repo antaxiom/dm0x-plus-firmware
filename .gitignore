@@ -12,3 +12,5 @@ blobs/*
 *.bin
 *.hex
 *.elf
+dist/
+stage/

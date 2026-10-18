@@ -1,0 +1,277 @@
+name: Release Build & Packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v0.3.0)'
+        required: false
+        default: 'v0.3.0'
+
+permissions:
+  contents: write
+
+jobs:
+  # ========================================================
+  # Job 1: Build CLI Binaries (toseven_pack)
+  # ========================================================
+  build-cli:
+    name: CLI / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: toseven_pack-linux-x86_64
+            binary: toseven_pack
+            archive: toseven_pack-linux-x86_64.tar.gz
+
+          # macOS Universal (Apple Silicon + Intel)
+          - os: macos-latest
+            target: universal
+            name: toseven_pack-macos-universal
+            binary: toseven_pack
+            archive: toseven_pack-macos-universal.tar.gz
+
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: toseven_pack-windows-x64
+            binary: toseven_pack.exe
+            archive: toseven_pack-windows-x64.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      # Linux dependencies for serialport (libudev)
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      # Build Linux or Windows
+      - name: Build CLI (Single Target)
+        if: matrix.target != 'universal'
+        run: |
+          cargo build --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack --release --target ${{ matrix.target }}
+
+      # Build macOS Universal Binary
+      - name: Build CLI (macOS Universal)
+        if: matrix.target == 'universal'
+        run: |
+          cargo build --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack --release --target aarch64-apple-darwin
+          cargo build --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack --release --target x86_64-apple-darwin
+          mkdir -p target/universal/release
+          lipo -create -output target/universal/release/toseven_pack \
+            target/aarch64-apple-darwin/release/toseven_pack \
+            target/x86_64-apple-darwin/release/toseven_pack
+
+      # Package Archive (tar.gz for Linux/macOS)
+      - name: Package tar.gz
+        if: runner.os != 'Windows'
+        run: |
+          BIN_PATH="${{ matrix.target == 'universal' && 'target/universal/release' || format('target/{0}/release', matrix.target) }}/${{ matrix.binary }}"
+          mkdir -p stage
+          cp "$BIN_PATH" stage/
+          cp README.md stage/
+          tar -czf "${{ matrix.archive }}" -C stage .
+
+      # Package Archive (zip for Windows)
+      - name: Package zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          New-Item -ItemType Directory -Force -Path stage
+          Copy-Item $bin stage/
+          Copy-Item README.md stage/
+          Compress-Archive -Path stage/* -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.archive }}
+          retention-days: 7
+
+  # ========================================================
+  # Job 2: Build GUI Applications (dm-plus-gui)
+  # ========================================================
+  build-gui:
+    name: GUI / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 Desktop
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: dm-plus-gui-linux-x86_64
+            binary: dm-plus-gui
+            archive: dm-plus-gui-linux-x86_64.tar.gz
+
+          # macOS Universal Desktop App
+          - os: macos-latest
+            target: universal
+            name: dm-plus-gui-macos-universal
+            binary: dm-plus-gui
+            archive: dm-plus-gui-macos-universal.zip
+
+          # Windows x64 Desktop
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: dm-plus-gui-windows-x64
+            binary: dm-plus-gui.exe
+            archive: dm-plus-gui-windows-x64.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      # Linux GUI dependencies (Slint & RFD require fontconfig, X11/Wayland, GTK3)
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev \
+            pkg-config \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgtk-3-dev
+
+      # Build Linux or Windows
+      - name: Build GUI (Single Target)
+        if: matrix.target != 'universal'
+        run: |
+          cargo build --manifest-path dm-plus-gui/Cargo.toml --release --target ${{ matrix.target }}
+
+      # Build macOS Universal Binary
+      - name: Build GUI (macOS Universal)
+        if: matrix.target == 'universal'
+        run: |
+          cargo build --manifest-path dm-plus-gui/Cargo.toml --release --target aarch64-apple-darwin
+          cargo build --manifest-path dm-plus-gui/Cargo.toml --release --target x86_64-apple-darwin
+          mkdir -p target/universal/release
+          lipo -create -output target/universal/release/dm-plus-gui \
+            target/aarch64-apple-darwin/release/dm-plus-gui \
+            target/x86_64-apple-darwin/release/dm-plus-gui
+
+      # Package Linux GUI
+      - name: Package Linux tar.gz
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p stage
+          cp target/${{ matrix.target }}/release/dm-plus-gui stage/
+          cp README.md stage/
+          tar -czf "${{ matrix.archive }}" -C stage .
+
+      # Package macOS App Bundle into zip
+      - name: Package macOS App Bundle
+        if: runner.os == 'macOS'
+        run: |
+          APP_DIR="stage/DM+ Firmware Studio.app/Contents"
+          mkdir -p "$APP_DIR/MacOS"
+          mkdir -p "$APP_DIR/Resources"
+          cp target/universal/release/dm-plus-gui "$APP_DIR/MacOS/"
+          
+          # Create Info.plist
+          cat << 'EOF' > "$APP_DIR/Info.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>dm-plus-gui</string>
+              <key>CFBundleIdentifier</key>
+              <string>org.toseven.dmplus</string>
+              <key>CFBundleName</key>
+              <string>DM+ Firmware Studio</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>0.3.0</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          
+          cp README.md stage/
+          (cd stage && zip -r -y "../${{ matrix.archive }}" .)
+
+      # Package Windows GUI
+      - name: Package Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          New-Item -ItemType Directory -Force -Path stage
+          Copy-Item $bin stage/
+          Copy-Item README.md stage/
+          Compress-Archive -Path stage/* -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload GUI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.archive }}
+          retention-days: 7
+
+  # ========================================================
+  # Job 3: Collate Artifacts, Compute Checksums & Release
+  # ========================================================
+  publish-release:
+    name: Collate & Publish Release
+    needs: [build-cli, build-gui]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all built archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 Checksums
+        working-directory: release-artifacts
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: release-artifacts/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.event.inputs.tag_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          generate_release_notes: true
+

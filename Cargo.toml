@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "dm01-firmware",
+    "dm-plus-gui",
+]
+resolver = "2"
+

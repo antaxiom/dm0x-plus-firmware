@@ -94,3 +94,4 @@ The DM01 saves all user configurations, calibration zero voltages, and ride stat
 - **Validation Header:** `A5 01 FE` at `0x0801FC5A`.
 - **Block Integrity:** 16-bit CRC-16 stored little-endian at the end of each block.
 - **Factory Model String:** `"TS1000W"` at `0x0800EE70`.
+

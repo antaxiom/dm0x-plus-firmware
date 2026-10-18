@@ -1,0 +1,736 @@
+import { ComboBox, CheckBox, Slider, LineEdit, ProgressIndicator } from "std-widgets.slint";
+
+// Adwaita-styled custom button with generous padding
+component AdwButton inherits Rectangle {
+    in property <string> text: "Button";
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 38px;
+    min-width: 140px;
+    border-radius: 8px;
+    background: !root.enabled ? #2a2a2a : (
+        root.primary ? (
+            touch.pressed ? #1a5fb4 : (touch.has-hover ? #1c71d8 : #3584e4)
+        ) : (
+            touch.pressed ? #2c2c2c : (touch.has-hover ? #444444 : #383838)
+        )
+    );
+    border-width: root.primary ? 0px : 1px;
+    border-color: #424242;
+    clip: true;
+
+    animate background { duration: 120ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: !root.enabled ? #77767b : #ffffff;
+            font-size: 13px;
+            font-weight: root.primary ? 600 : 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Adwaita Card Container
+component AdwCard inherits Rectangle {
+    background: #2e2e2e;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #383838;
+    clip: true;
+}
+
+export component MainWindow inherits Window {
+    title: "DM+ Firmware Studio";
+    min-width: 880px;
+    min-height: 720px;
+    background: #242424;
+    default-font-family: "Cantarell, Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif";
+
+    // Callbacks to Rust backend
+    callback refresh-ports();
+    callback browse-motor-pack();
+    callback flash-motor(string, string, string, string, string, bool, int, int);
+    callback browse-display-hex();
+    callback browse-display-output-hex();
+    callback inspect-display-hex(string);
+    callback patch-display-hex(string, string);
+    callback flash-display-hex(string, string, bool, bool);
+
+    // Reactive Properties
+    in-out property <int> active-tab: 0;
+    in-out property <[string]> available-ports: ["No ports detected"];
+    in-out property <string> selected-motor-port: "";
+    in-out property <string> selected-display-port: "";
+    
+    // Motor Tab State
+    in-out property <string> motor-firmware-source: "DM01 Open Firmware v0.3.0 (Built-in)";
+    in-out property <string> motor-custom-pack-path: "";
+    in-out property <string> motor-target: "DM01 (1000W / 750W 12-FET)";
+    in-out property <string> tuning-profile: "Uncapped Cadence (Instant hill-climb, no 60 RPM penalty)";
+    in-out property <string> ceiling-policy: "Unified Level Ceiling (Respects Pwr%)";
+    in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
+    in-out property <int> max-current-a: 30;
+    in-out property <bool> motor-is-flashing: false;
+    in-out property <float> motor-progress: 0.0;
+    in-out property <string> motor-status: "Ready to flash or test.";
+
+    // Display Tab State
+    in-out property <string> display-hex-path: "";
+    in-out property <string> display-output-path: "";
+    in-out property <string> display-model-name: "—";
+    in-out property <string> display-lockout-status: "Load an Intel HEX firmware file to inspect.";
+    in-out property <bool> display-is-locked: false;
+    in-out property <bool> display-auto-unlock: true;
+    in-out property <bool> display-is-flashing: false;
+    in-out property <float> display-progress: 0.0;
+    in-out property <string> display-status: "Ready.";
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Top Adwaita HeaderBar
+        Rectangle {
+            height: 64px;
+            background: #303030;
+            border-width: 1px;
+            border-color: #383838;
+
+            HorizontalLayout {
+                padding-top: 10px;
+                padding-bottom: 10px;
+                padding-left: 24px;
+                padding-right: 24px;
+                alignment: space-between;
+
+                // Left: Title and Subtitle
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "DM+ Firmware Studio";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: #ffffff;
+                    }
+                    Text {
+                        text: "ToSeven Mid-Drive Motor Tuning & Display Patching Tool";
+                        font-size: 12px;
+                        color: #9a9996;
+                    }
+                }
+
+                // Center: Adwaita Segmented View Switcher (Pill Switcher)
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 40px;
+                        width: 400px;
+                        background: #242424;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: #383838;
+
+                        HorizontalLayout {
+                            padding: 3px;
+                            spacing: 4px;
+
+                            // Tab 0: Motor Controller
+                            Rectangle {
+                                border-radius: 6px;
+                                background: root.active-tab == 0 ? #383838 : (tab0-touch.has-hover ? #2e2e2e : transparent);
+                                animate background { duration: 100ms; }
+
+                                tab0-touch := TouchArea {
+                                    clicked => { root.active-tab = 0; }
+                                }
+
+                                Text {
+                                    text: "Motor Controller";
+                                    font-size: 13px;
+                                    font-weight: root.active-tab == 0 ? 600 : 500;
+                                    color: root.active-tab == 0 ? #ffffff : #9a9996;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Tab 1: Display Flasher & Patcher
+                            Rectangle {
+                                border-radius: 6px;
+                                background: root.active-tab == 1 ? #383838 : (tab1-touch.has-hover ? #2e2e2e : transparent);
+                                animate background { duration: 100ms; }
+
+                                tab1-touch := TouchArea {
+                                    clicked => { root.active-tab = 1; }
+                                }
+
+                                Text {
+                                    text: "Display Flasher & Patcher";
+                                    font-size: 13px;
+                                    font-weight: root.active-tab == 1 ? 600 : 500;
+                                    color: root.active-tab == 1 ? #ffffff : #9a9996;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Right: Refresh Ports Button
+                HorizontalLayout {
+                    alignment: center;
+                    AdwButton {
+                        text: "Refresh Ports";
+                        clicked => { root.refresh-ports(); }
+                    }
+                }
+            }
+        }
+
+        // Main Content Area
+        VerticalLayout {
+            padding-top: 24px;
+            padding-bottom: 24px;
+            padding-left: 24px;
+            padding-right: 24px;
+            spacing: 16px;
+
+            // ==========================================
+            // VIEW 1: MOTOR CONTROLLER FLASHER & TUNING
+            // ==========================================
+            if root.active-tab == 0: VerticalLayout {
+                spacing: 16px;
+
+                // Firmware Source Selection Card
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "Firmware Selection";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Firmware Source:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            ComboBox {
+                                model: [
+                                    "DM01 Open Firmware v0.3.0 (Built-in)",
+                                    "Custom .Pack File (Manual Selection)"
+                                ];
+                                current-value <=> root.motor-firmware-source;
+                                width: 380px;
+                            }
+                        }
+
+                        if root.motor-firmware-source == "Custom .Pack File (Manual Selection)": HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Pack File:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            LineEdit {
+                                text <=> root.motor-custom-pack-path;
+                                placeholder-text: "No file selected (click Choose File...)";
+                                read-only: true;
+                            }
+                            AdwButton {
+                                text: "Choose File...";
+                                clicked => { root.browse-motor-pack(); }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    // Left Card: Hardware & Tuning Profile
+                    AdwCard {
+                        width: 50%;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            Text {
+                                text: "Hardware & Tuning Profile";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: #ffffff;
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Target Hardware Model";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                                ComboBox {
+                                    model: [
+                                        "DM01 (1000W / 750W 12-FET)",
+                                        "DM02 (500W Internal)"
+                                    ];
+                                    current-value <=> root.motor-target;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Pedal Assist Tuning Profile";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                                ComboBox {
+                                    model: [
+                                        "Uncapped Cadence (Instant hill-climb, no 60 RPM penalty)",
+                                        "Progressive Trail (Quadratic curve, feathering to punch)",
+                                        "Commuter Comfort (High sensitivity, relaxed pedaling)",
+                                        "Stock V6510C (Factory behavior)"
+                                    ];
+                                    current-value <=> root.tuning-profile;
+                                    enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Assist Ceiling Policy";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                                ComboBox {
+                                    model: [
+                                        "Unified Level Ceiling (Respects Pwr%)",
+                                        "Stock Dual Ceiling (Torque uses Mode Max)"
+                                    ];
+                                    current-value <=> root.ceiling-policy;
+                                    enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
+                                }
+                            }
+                        }
+                    }
+
+                    // Right Card: Battery & Electrical Limits
+                    AdwCard {
+                        width: 50%;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            Text {
+                                text: "Battery & Electrical Limits";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: #ffffff;
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Battery Nominal Pack";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                                ComboBox {
+                                    model: [
+                                        "48V (13S, 54.6V Peak)",
+                                        "52V (14S, 58.8V Peak)",
+                                        "36V (10S, 42.0V Peak)"
+                                    ];
+                                    current-value <=> root.battery-voltage;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: "Maximum Sport Current";
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: #deddda;
+                                    }
+                                    Text {
+                                        text: "\{root.max-current-a} A (\{root.max-current-a * 48} W @ 48V)";
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: #3584e4;
+                                    }
+                                }
+                                Slider {
+                                    minimum: 10;
+                                    maximum: 35;
+                                    value: root.max-current-a;
+                                    changed(val) => { root.max-current-a = Math.round(val); }
+                                }
+                            }
+
+                            Text {
+                                text: "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion, and 500ms Hardware Watchdog (IWDG) are automatically active.";
+                                font-size: 12px;
+                                color: #9a9996;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // Bottom Card: Serial Port Flasher
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "Motor Controller Flasher";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+                            alignment: start;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Serial Port:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            ComboBox {
+                                model: root.available-ports;
+                                current-value <=> root.selected-motor-port;
+                                width: 340px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.motor-status;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #e5a50a;
+                                }
+                            }
+
+                            // Dedicated side-by-side action buttons
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                AdwButton {
+                                    text: "Test Flash (Dry Run)";
+                                    enabled: !root.motor-is-flashing;
+                                    clicked => {
+                                        root.flash-motor(
+                                            root.motor-firmware-source,
+                                            root.motor-custom-pack-path,
+                                            root.motor-target,
+                                            root.tuning-profile,
+                                            root.selected-motor-port,
+                                            true, // dry_run
+                                            root.max-current-a,
+                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
+                                        );
+                                    }
+                                }
+
+                                AdwButton {
+                                    text: "Flash Firmware";
+                                    primary: true;
+                                    enabled: !root.motor-is-flashing;
+                                    clicked => {
+                                        root.flash-motor(
+                                            root.motor-firmware-source,
+                                            root.motor-custom-pack-path,
+                                            root.motor-target,
+                                            root.tuning-profile,
+                                            root.selected-motor-port,
+                                            false, // live flash
+                                            root.max-current-a,
+                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        ProgressIndicator {
+                            progress: root.motor-progress;
+                        }
+                    }
+                }
+            }
+
+            // ==========================================
+            // VIEW 2: DISPLAY FLASHER & LOCKOUT PATCHER
+            // ==========================================
+            if root.active-tab == 1: VerticalLayout {
+                spacing: 16px;
+
+                // Original Firmware Card
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "Original Display Firmware (Intel HEX)";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "HEX File:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            LineEdit {
+                                text <=> root.display-hex-path;
+                                placeholder-text: "No display firmware selected (click Choose File...)";
+                                read-only: true;
+                            }
+                            AdwButton {
+                                text: "Choose File...";
+                                clicked => { root.browse-display-hex(); }
+                            }
+                        }
+
+                        // Inspection Badges Row
+                        HorizontalLayout {
+                            spacing: 24px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Target Model:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #9a9996;
+                                }
+                                Text {
+                                    text: root.display-model-name;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: #ffffff;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Lockout Status:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #9a9996;
+                                }
+                                Text {
+                                    text: root.display-lockout-status;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: root.display-is-locked ? #e01b24 : #2ec27e;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Lockout Neutralizer & Patching Card
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "Lockout Neutralizer & Permanent Patch";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        Text {
+                            text: "Neutralizes all 6 post-October 2024 restriction branch gates with ARM Thumb NOP (0x00BF) instructions, permanently restoring full access to the Speed & Power, Current Limits, and Wheel Size menus.";
+                            font-size: 12px;
+                            color: #9a9996;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Output File:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            LineEdit {
+                                text <=> root.display-output-path;
+                                placeholder-text: "Destination for unlocked .hex file (click Save As...)";
+                                read-only: true;
+                            }
+                            AdwButton {
+                                text: "Save As...";
+                                clicked => { root.browse-display-output-hex(); }
+                            }
+                            AdwButton {
+                                text: "Patch Firmware";
+                                primary: true;
+                                enabled: root.display-hex-path != "" && root.display-output-path != "";
+                                clicked => { root.patch-display-hex(root.display-hex-path, root.display-output-path); }
+                            }
+                        }
+                    }
+                }
+
+                // USB MegaHunt Display ISP Flasher Card
+                AdwCard {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 14px;
+
+                        Text {
+                            text: "USB Display ISP Flasher";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+                            alignment: start;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Serial Port:";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #deddda;
+                                }
+                            }
+                            ComboBox {
+                                model: root.available-ports;
+                                current-value <=> root.selected-display-port;
+                                width: 340px;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                CheckBox {
+                                    text: "Auto-Unlock on Flash";
+                                    checked <=> root.display-auto-unlock;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: root.display-status;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #e5a50a;
+                                }
+                            }
+
+                            // Dedicated side-by-side action buttons
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                AdwButton {
+                                    text: "Test Flash (Dry Run)";
+                                    enabled: !root.display-is-flashing;
+                                    clicked => {
+                                        root.flash-display-hex(
+                                            root.display-hex-path,
+                                            root.selected-display-port,
+                                            root.display-auto-unlock,
+                                            true // dry_run
+                                        );
+                                    }
+                                }
+
+                                AdwButton {
+                                    text: "Flash Display Firmware";
+                                    primary: true;
+                                    enabled: !root.display-is-flashing;
+                                    clicked => {
+                                        root.flash-display-hex(
+                                            root.display-hex-path,
+                                            root.selected-display-port,
+                                            root.display-auto-unlock,
+                                            false // live flash
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        ProgressIndicator {
+                            progress: root.display-progress;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

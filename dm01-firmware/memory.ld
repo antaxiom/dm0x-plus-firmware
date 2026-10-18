@@ -22,12 +22,20 @@ SECTIONS
 
   .data : ALIGN(4)
   {
+    _sdata = .;
     *(.data .data.*)
+    . = ALIGN(4);
+    _edata = .;
   } > RAM AT > FLASH
 
-  .bss : ALIGN(4)
+  _sidata = LOADADDR(.data);
+
+  .bss (NOLOAD) : ALIGN(4)
   {
-    *(.bss .bss.*)
+    _sbss = .;
+    *(.bss .bss.* COMMON)
+    . = ALIGN(4);
+    _ebss = .;
   } > RAM
 
   /DISCARD/ :
@@ -35,3 +43,4 @@ SECTIONS
     *(.ARM.exidx .ARM.exidx.*)
   }
 }
+

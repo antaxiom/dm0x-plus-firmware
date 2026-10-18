@@ -26,18 +26,24 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
   - [`src/stock.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/stock.rs) — Pinned SHA-256 registry of known official factory `.Pack` releases.
   - [`src/sha256.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sha256.rs) — Dependency-free `#![no_std]` SHA-256 digest engine.
   - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs) — High-level controller state machines.
+  - [`src/flasher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/flasher.rs) — Motor controller IAP flashing state machine, 21-byte wakeup packet encoder (`0xC9, 0x77`, 7-bit BE, CRC-16, `0x69` wire cipher), 12-byte header frame builder, 16-byte chunk / 1 KB sector pacing, and MegaHunt display ISP framing & session state machine (`0x02`, CMD, len, CRC-16-CCITT).
+  - [`src/display_patcher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/display_patcher.rs) — Display firmware Intel HEX parser, vector table validator, automated 3-gate post-October 2024 lockout detector, and ARM Thumb NOP (`0x00BF`) clean-room patcher for `T24V`, `T154`, `LCD135C`, and `M15`.
   - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `SCB`).
   - [`src/hal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/hal.rs) — Concrete hardware drivers (`Dm01PwmHardware` for 16 kHz complementary PWM with dead-time, `Dm01SensorsHardware`).
-  - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) — Standalone bare-metal Cortex-M4F firmware entry point, vector table (MSP `0x20005628`), and FOC control loop.
+  - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) — Standalone bare-metal Cortex-M4F open firmware (`dm01_firmware`), speaks standard 18-byte display protocol, uses 5-block EEPROM, with uncapped cadence, smooth FOC, and thermal rollback.
   - [`memory.ld`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/memory.ld) & [`build.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/build.rs) — Cortex-M4F Flash (`0x08001800`) / SRAM (`0x20000000`) linker script with automated cargo search configuration.
-  - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — CLI utility (`toseven_pack`) to inspect, unpack, repack, create (directly from ELF or raw binary), objcopy, and verify `.Pack` firmware containers.
+  - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — Unified CLI utility (`toseven_pack`) to inspect, unpack, repack, create (directly from ELF or raw binary), objcopy, verify, and flash motor controller `.Pack` containers, as well as inspect (`display info`), permanently unlock (`display patch`), and flash (`display flash [--unlock]`) display `.hex` firmware.
 - [`blobs/`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/blobs/README.md) — External proprietary assets (.gitignore'd for clean-room legal safety):
   - `blobs/firmware/` (`dm01/`, `dm02/` stock `.Pack` files)
   - `blobs/displays/` (hex firmware dumps for `T24V`, `T154`, `M15`, `LCD135C`)
   - `blobs/apps/` (Android tuning APK)
+  - `blobs/programming/` (`TO7-G2 IAP Tool Ver 5.2.exe`, `MH2020C_ISP.exe`)
   - `blobs/manuals/` (PDF user manuals)
   - Fully cataloged with SHA-256 hashes in [`blobs/README.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/blobs/README.md).
 - `Documentation/`
+  - [`Bench_Testing_Bringup_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Bench_Testing_Bringup_Guide.md) — Hardware bring-up runbook, Julet 5-pin / 8-pin harness pinouts, 48V @ 1.0A bench safety limits, and step-by-step verification protocol.
+  - [`ToSeven_IAP_Flashing_Protocol.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/ToSeven_IAP_Flashing_Protocol.md) — Definitive clean-room reverse engineering specification of the Motor Controller IAP protocol (handshake, 21-byte wakeup frame, 12-byte header, 1024-byte sector pacing, mathematical proof of container XOR keys) and Display ISP protocol (MegaHunt MH2020C / MH1903).
+  - [`ToSeven_Display_Firmware_Architecture.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/ToSeven_Display_Firmware_Architecture.md) — Complete reverse-engineering specification of ToSeven displays (`T24V`, `LCD135C`, `M15`, `T154`), 13 throttle modes, button matrix, EEPROM sync, OTA flasher, and post-Oct 2024 menu lockout bypass.
   - [`DM01_Power_Curve_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/DM01_Power_Curve_Guide.md) — Human-readable guide explaining how the DM01 determines power without memory-index jargon.
   - [`Official_Specifications.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Official_Specifications.md) — Hardware specifications and official manual links.
   - [`Research_Downgrade_and_Update.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Research_Downgrade_and_Update.md) — Firmware update/downgrade and container notes.
@@ -94,7 +100,7 @@ cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.t
 # Extract raw Flash binary from ELF
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
 
-# Package bare-metal firmware directly from ELF or raw binary into official 128 KB .Pack container
+# Package bare-metal firmware directly from ELF into official 128 KB .Pack container
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
 
 # Inspect generated .Pack container
@@ -103,4 +109,40 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info bu
 # Inspect and verify DM01 and DM02 stock .Pack containers
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack"
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack"
+
+# Dry-run simulate IAP packet framing and handshake
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack" --dry-run
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack" --dry-run
+
+# Live flash firmware over USB-UART adapter (bench power supply recommended)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash /dev/tty.usbserial-110 build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+
+# Inspect display firmware (model, vector table, and lockout status)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display info blobs/displays/t24v/TO7-T24V-Y241225.hex
+
+# Permanently unlock display firmware (neutralizes all 6 restriction branch gates)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display patch blobs/displays/t24v/TO7-T24V-Y241225.hex build/TO7-T24V-Y241225-Unlocked.hex
+
+# Flash display firmware with on-the-fly unlock (dry-run simulation)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash blobs/displays/t24v/TO7-T24V-Y241225.hex --unlock --dry-run
+
+# Live flash display firmware over USB CDC port with on-the-fly unlock
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash /dev/tty.usbmodem110 blobs/displays/t24v/TO7-T24V-Y241225.hex --unlock
+
+# Monitor live 0x69-encrypted UART telemetry (or run simulated ride demo)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor /dev/tty.usbserial-110 --baud 9600
+
+# Run complete comparative simulation suite (Stock V6510C vs. Open Firmware)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- simulate
+cargo test --manifest-path dm01-firmware/Cargo.toml --test simulation_suite -- --nocapture
+
+# List connected USB serial adapters
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
+
+# Launch DM+ Firmware Studio Desktop GUI (Slint)
+cargo run --manifest-path dm-plus-gui/Cargo.toml
+
+# Package local host release artifacts (CLI & GUI) into dist/
+./scripts/package-release.sh
 ```

@@ -190,6 +190,7 @@ pub struct HallPllObserver {
     pub angular_velocity_step: i16,
     pub last_hall_bits: u8,
     pub ticks_since_edge: u16,
+    pub initialized: bool,
 }
 
 impl Default for HallPllObserver {
@@ -203,25 +204,45 @@ impl HallPllObserver {
         Self {
             estimated_angle: 0,
             angular_velocity_step: 0,
-            last_hall_bits: 0b001,
+            last_hall_bits: 0,
             ticks_since_edge: 0,
+            initialized: false,
         }
+    }
+
+    /// Resets the observer state to force clean resynchronization with the next Hall reading.
+    pub fn reset(&mut self) {
+        self.angular_velocity_step = 0;
+        self.ticks_since_edge = 0;
+        self.initialized = false;
     }
 
     /// Updates the interpolated electrical angle at the PWM ISR rate.
     pub fn step_isr(&mut self, hall_bits: u8, angle_offset_deg: i8) -> Option<u16> {
         let sector_angle = decode_hall_angle(hall_bits, angle_offset_deg)?;
+        if !self.initialized {
+            self.estimated_angle = sector_angle;
+            self.last_hall_bits = hall_bits;
+            self.angular_velocity_step = 0;
+            self.ticks_since_edge = 0;
+            self.initialized = true;
+            return Some(sector_angle);
+        }
+
         if hall_bits != self.last_hall_bits {
             let angle_err = sector_angle.wrapping_sub(self.estimated_angle) as i16;
-            let period = self.ticks_since_edge.max(1) as i16;
-            self.angular_velocity_step = angle_err / period;
+            let period = (self.ticks_since_edge as i32).max(1);
+            self.angular_velocity_step = (angle_err as i32 / period) as i16;
             self.estimated_angle = sector_angle;
             self.last_hall_bits = hall_bits;
             self.ticks_since_edge = 1;
         } else {
             self.ticks_since_edge = self.ticks_since_edge.saturating_add(1);
-            // Clamp interpolation to at most one 60-degree sector (10_922 units)
-            if self.ticks_since_edge < 2000 {
+            // Decay angular velocity step if motor is stationary (>100 ms = 1600 ticks at 16 kHz)
+            if self.ticks_since_edge > 1600 {
+                self.angular_velocity_step = 0;
+                self.estimated_angle = sector_angle;
+            } else {
                 self.estimated_angle = self
                     .estimated_angle
                     .wrapping_add(self.angular_velocity_step as u16);
@@ -297,6 +318,14 @@ impl FocCurrentLoop {
             pwm_period,
             last_modulation_permille: 0,
         }
+    }
+
+    /// Resets both d-axis and q-axis PI controller integrators and clears modulation state.
+    #[inline(always)]
+    pub fn reset(&mut self) {
+        self.id_pi.reset();
+        self.iq_pi.reset();
+        self.last_modulation_permille = 0;
     }
 
     /// Configures the current loop PI gains from the `FOC Menu` settings.
