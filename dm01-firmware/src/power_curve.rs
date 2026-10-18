@@ -174,6 +174,22 @@ impl TorqueSensorState {
 
     /// Updates automatic `ZeroVol` drift tracking (`0x08009034`) and the IIR pedal filter (`0x0800912C`).
     pub fn update_voltage(&mut self, pedal_mv: u16, cadence_rpm: u16, filter_setting: u8) {
+        self.update_voltage_with_policy(
+            pedal_mv,
+            cadence_rpm,
+            filter_setting,
+            crate::tuning::TorqueSpanPolicy::StockStaticMaxVol,
+        );
+    }
+
+    /// Updates automatic `ZeroVol` drift tracking and IIR pedal filter using a specified [`crate::tuning::TorqueSpanPolicy`].
+    pub fn update_voltage_with_policy(
+        &mut self,
+        pedal_mv: u16,
+        cadence_rpm: u16,
+        filter_setting: u8,
+        span_policy: crate::tuning::TorqueSpanPolicy,
+    ) {
         // 1. Record sample in 5-element ring buffer and compute max pairwise delta
         self.history_mv[self.history_idx] = pedal_mv;
         self.history_idx = (self.history_idx + 1) % 5;
@@ -212,10 +228,21 @@ impl TorqueSensorState {
             / (f_coeff + 1)) as u16;
 
         // 4. Startup deadband gate and normalization to 0..100%
-        if self.filtered_net_mv < self.startup_net_vol_mv || self.max_vol_mv <= self.zero_vol_mv {
+        if self.filtered_net_mv < self.startup_net_vol_mv {
             self.torque_pct = 0;
         } else {
-            let span = (self.max_vol_mv - self.zero_vol_mv) as u32;
+            let span = match span_policy {
+                crate::tuning::TorqueSpanPolicy::StockStaticMaxVol => {
+                    if self.max_vol_mv <= self.zero_vol_mv {
+                        1
+                    } else {
+                        (self.max_vol_mv - self.zero_vol_mv) as u32
+                    }
+                }
+                crate::tuning::TorqueSpanPolicy::AutoSpanTracking { nominal_span_mv } => {
+                    (nominal_span_mv.max(500)) as u32
+                }
+            };
             let pct = ((self.filtered_net_mv as u32) * 100) / span;
             self.torque_pct = pct.min(100) as u8;
         }
@@ -263,7 +290,7 @@ impl TorqueSensorState {
         level_power_ceiling_da: u16,
         profile: &crate::tuning::TuningProfile,
     ) -> u16 {
-        self.update_voltage(pedal_mv, cadence_rpm, filter_setting);
+        self.update_voltage_with_policy(pedal_mv, cadence_rpm, filter_setting, profile.span_policy);
 
         if self.torque_pct == 0 || cadence_rpm == 0 || level_eassist_pct == 0 {
             return 0;
@@ -447,10 +474,48 @@ pub const fn apply_lvc_cushion_da(current_da: u16, battery_dv: u16, lvc_dv: u16)
     (((current_da as u32) * num) / 120) as u16
 }
 
+/// Stage 3B: Proportional Low-Voltage Cutoff (LVC) taper down to true 0.0 A (0 dA).
+///
+/// Linearly tapers current from 100% at `lvc_dv + cushion_dv` down to exactly 0 dA at `lvc_dv`.
+/// Eliminates the stock 25% floor that causes severe battery sag and BMS hard-trips.
+pub const fn apply_true_zero_lvc_cushion_da(
+    current_da: u16,
+    battery_dv: u16,
+    lvc_dv: u16,
+    cushion_dv: u16,
+) -> u16 {
+    if battery_dv <= lvc_dv || cushion_dv == 0 {
+        return 0;
+    }
+    let margin_dv = battery_dv - lvc_dv;
+    if margin_dv >= cushion_dv {
+        return current_da;
+    }
+    // Linear taper from 0% at margin_dv = 0 to 100% at margin_dv = cushion_dv
+    (((current_da as u32) * (margin_dv as u32)) / (cushion_dv as u32)) as u16
+}
+
+/// Applies LVC reserve cushion according to the specified [`crate::tuning::LvcCushionPolicy`].
+pub const fn apply_lvc_cushion_with_policy_da(
+    current_da: u16,
+    battery_dv: u16,
+    lvc_dv: u16,
+    policy: crate::tuning::LvcCushionPolicy,
+) -> u16 {
+    match policy {
+        crate::tuning::LvcCushionPolicy::Stock25PctFloor => {
+            apply_lvc_cushion_da(current_da, battery_dv, lvc_dv)
+        }
+        crate::tuning::LvcCushionPolicy::TrueZeroCutoff { cushion_dv } => {
+            apply_true_zero_lvc_cushion_da(current_da, battery_dv, lvc_dv, cushion_dv)
+        }
+    }
+}
+
 /// Stage 3 Complete Arbitrator (`0x08006620`, `0x0800674C`, `0x08005478` in DM01 V6510C).
 ///
 /// Combines Torque, Cadence (PAS), and Throttle demands, applies the `±2 dA` (`±0.2 A`) per tick
-/// slew-rate ramp limiter, proportional speed soft-taper, and LVC 3.0V reserve cushion.
+/// slew-rate ramp limiter, proportional speed soft-taper, and LVC reserve cushion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerCurveArbitrator {
     pub ramped_current_da: u16,
@@ -483,6 +548,37 @@ impl PowerCurveArbitrator {
         battery_dv: u16,
         lvc_dv: u16,
     ) -> u16 {
+        self.step_with_profile(
+            brake_or_cutoff,
+            pedaling_forward,
+            torque_current_da,
+            pas_current_da,
+            throttle_current_da,
+            bike_speed_deci_kph,
+            speed_limit_deci_kph,
+            walk_assist_active,
+            battery_dv,
+            lvc_dv,
+            &crate::tuning::TuningProfile::stock_v6510c(),
+        )
+    }
+
+    /// Step arbitration using a custom [`crate::tuning::TuningProfile`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_with_profile(
+        &mut self,
+        brake_or_cutoff: bool,
+        pedaling_forward: bool,
+        torque_current_da: u16,
+        pas_current_da: u16,
+        throttle_current_da: u16,
+        bike_speed_deci_kph: u16,
+        speed_limit_deci_kph: u16,
+        walk_assist_active: bool,
+        battery_dv: u16,
+        lvc_dv: u16,
+        profile: &crate::tuning::TuningProfile,
+    ) -> u16 {
         if brake_or_cutoff || battery_dv <= lvc_dv {
             self.ramped_current_da = 0;
             return 0;
@@ -514,8 +610,8 @@ impl PowerCurveArbitrator {
             walk_assist_active,
         );
 
-        // 4. Low-Voltage 3.0V reserve cushion
-        apply_lvc_cushion_da(speed_tapered_da, battery_dv, lvc_dv)
+        // 4. Low-Voltage reserve cushion according to profile policy
+        apply_lvc_cushion_with_policy_da(speed_tapered_da, battery_dv, lvc_dv, profile.lvc_policy)
     }
 }
 
@@ -600,5 +696,96 @@ mod tests {
         assert_eq!(apply_lvc_cushion_da(300, 445, 410), 300); // > 44.0V: 100%
         assert_eq!(apply_lvc_cushion_da(300, 425, 410), 187); // 42.5V (halfway): 62.5% of 300 = 187 dA
         assert_eq!(apply_lvc_cushion_da(300, 410, 410), 0); // <= 41.0V: 0 dA cutoff
+    }
+
+    #[test]
+    fn test_auto_span_tracking_invariance() {
+        // Test Atak_Snajpera's proposal: Effort sensitivity remains invariant across ZeroVol drift
+        let mut cold_ts = TorqueSensorState::new(600, 3000, 50);
+        let mut warm_ts = TorqueSensorState::new(900, 3000, 50);
+
+        let auto_span_profile = crate::tuning::TuningProfile::gear_safe_trail();
+
+        // Equal human foot force produces 1150 mV delta above resting zero:
+        // Cold sensor (0.6V rest): 600 + 1150 = 1750 mV
+        // Warm sensor (0.9V rest): 900 + 1150 = 2050 mV
+        let cold_da = cold_ts.compute_current_da_with_profile(
+            1750,
+            60,
+            0,
+            10,
+            100,
+            0,
+            300,
+            300,
+            300,
+            &auto_span_profile,
+        );
+        let warm_da = warm_ts.compute_current_da_with_profile(
+            2050,
+            60,
+            0,
+            10,
+            100,
+            0,
+            300,
+            300,
+            300,
+            &auto_span_profile,
+        );
+
+        // Both must produce identical torque percentage (1150 / 2300 = 50%) and identical current!
+        assert_eq!(cold_ts.torque_pct, 50);
+        assert_eq!(warm_ts.torque_pct, 50);
+        assert_eq!(
+            cold_da, warm_da,
+            "Auto-span must produce identical current across thermal drift"
+        );
+    }
+
+    #[test]
+    fn test_true_zero_lvc_cushion() {
+        // LVC = 37.0V (370 dV), cushion = 4.0V (40 dV) [370..410 dV]
+        let lvc_dv = 370;
+        let cushion_dv = 40;
+        let base_current_da = 300; // 30.0 A
+
+        // Above cushion (> 41.0V) -> 100% current
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 450, lvc_dv, cushion_dv),
+            300
+        );
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 410, lvc_dv, cushion_dv),
+            300
+        );
+
+        // Halfway into cushion (39.0V, margin 20 dV) -> exactly 50% current (15.0A)
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 390, lvc_dv, cushion_dv),
+            150
+        );
+
+        // Quarter into cushion (38.0V, margin 10 dV) -> 25% current (7.5A)
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 380, lvc_dv, cushion_dv),
+            75
+        );
+
+        // 0.1V above LVC (37.1V, margin 1 dV) -> smoothly tapers to 2.5% (0.75A), NOT 25% floor!
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 371, lvc_dv, cushion_dv),
+            7
+        );
+
+        // At or below LVC (<= 37.0V) -> exactly 0A cutoff
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 370, lvc_dv, cushion_dv),
+            0
+        );
+        assert_eq!(
+            apply_true_zero_lvc_cushion_da(base_current_da, 350, lvc_dv, cushion_dv),
+            0
+        );
     }
 }

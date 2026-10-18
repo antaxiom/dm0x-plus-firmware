@@ -67,6 +67,7 @@ export component MainWindow inherits Window {
     callback browse-display-output-hex();
     callback inspect-display-hex(string);
     callback patch-display-hex(string, string);
+    callback export-patched-display-hex(string);
     callback flash-display-hex(string, string, bool, bool);
 
     // Reactive Properties
@@ -79,7 +80,7 @@ export component MainWindow inherits Window {
     in-out property <string> motor-firmware-source: "DM01 Open Firmware v0.3.0 (Built-in)";
     in-out property <string> motor-custom-pack-path: "";
     in-out property <string> motor-target: "DM01 (1000W / 750W 12-FET)";
-    in-out property <string> tuning-profile: "Uncapped Cadence (Instant hill-climb, no 60 RPM penalty)";
+    in-out property <string> tuning-profile: "Gear-Safe Progressive (Protects nylon gear, full power at 35 RPM)";
     in-out property <string> ceiling-policy: "Unified Level Ceiling (Respects Pwr%)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
     in-out property <int> max-current-a: 30;
@@ -246,6 +247,11 @@ export component MainWindow inherits Window {
                                     "Custom .Pack File (Manual Selection)"
                                 ];
                                 current-value <=> root.motor-firmware-source;
+                                selected(val) => {
+                                    if val == "Custom .Pack File (Manual Selection)" {
+                                        root.browse-motor-pack();
+                                    }
+                                }
                                 width: 380px;
                             }
                         }
@@ -318,10 +324,10 @@ export component MainWindow inherits Window {
                                 }
                                 ComboBox {
                                     model: [
-                                        "Uncapped Cadence (Instant hill-climb, no 60 RPM penalty)",
-                                        "Progressive Trail (Quadratic curve, feathering to punch)",
-                                        "Commuter Comfort (High sensitivity, relaxed pedaling)",
-                                        "Stock V6510C (Factory behavior)"
+                                        "Gear-Safe Progressive (Protects nylon gear, full power at 35 RPM)",
+                                        "Commuter Comfort (High sensitivity auto-span, relaxed pedaling)",
+                                        "Stock V6510C (Factory behavior, 60 RPM ramp)",
+                                        "Uncapped (Competition/Metal Gear only - strips nylon gear)"
                                     ];
                                     current-value <=> root.tuning-profile;
                                     enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
@@ -516,14 +522,14 @@ export component MainWindow inherits Window {
             if root.active-tab == 1: VerticalLayout {
                 spacing: 16px;
 
-                // Original Firmware Card
+                // Display Firmware Card (Input, Model/Lockout Inspection & Save Patched)
                 AdwCard {
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
 
                         Text {
-                            text: "Original Display Firmware (Intel HEX)";
+                            text: "Display Firmware (Intel HEX)";
                             font-size: 15px;
                             font-weight: 700;
                             color: #ffffff;
@@ -551,88 +557,49 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Inspection Badges Row
+                        // Inspection Badges Row & Secondary "Save Patched" button
                         HorizontalLayout {
-                            spacing: 24px;
+                            alignment: space-between;
+
                             HorizontalLayout {
-                                spacing: 6px;
-                                Text {
-                                    text: "Target Model:";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: #9a9996;
+                                spacing: 24px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Target Model:";
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: #9a9996;
+                                    }
+                                    Text {
+                                        text: root.display-model-name;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: #ffffff;
+                                    }
                                 }
-                                Text {
-                                    text: root.display-model-name;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    color: #ffffff;
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: 6px;
-                                Text {
-                                    text: "Lockout Status:";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: #9a9996;
-                                }
-                                Text {
-                                    text: root.display-lockout-status;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    color: root.display-is-locked ? #e01b24 : #2ec27e;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Lockout Neutralizer & Patching Card
-                AdwCard {
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-
-                        Text {
-                            text: "Lockout Neutralizer & Permanent Patch";
-                            font-size: 15px;
-                            font-weight: 700;
-                            color: #ffffff;
-                        }
-
-                        Text {
-                            text: "Neutralizes all 6 post-October 2024 restriction branch gates with ARM Thumb NOP (0x00BF) instructions, permanently restoring full access to the Speed & Power, Current Limits, and Wheel Size menus.";
-                            font-size: 12px;
-                            color: #9a9996;
-                            wrap: word-wrap;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-                            VerticalLayout {
-                                alignment: center;
-                                Text {
-                                    text: "Output File:";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: #deddda;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: "Lockout Status:";
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: #9a9996;
+                                    }
+                                    Text {
+                                        text: root.display-lockout-status;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: root.display-is-locked ? #e01b24 : #2ec27e;
+                                    }
                                 }
                             }
-                            LineEdit {
-                                text <=> root.display-output-path;
-                                placeholder-text: "Destination for unlocked .hex file (click Save As...)";
-                                read-only: true;
-                            }
+
+                            // Secondary button to save a patched copy directly to disk
                             AdwButton {
-                                text: "Save As...";
-                                clicked => { root.browse-display-output-hex(); }
-                            }
-                            AdwButton {
-                                text: "Patch Firmware";
-                                primary: true;
-                                enabled: root.display-hex-path != "" && root.display-output-path != "";
-                                clicked => { root.patch-display-hex(root.display-hex-path, root.display-output-path); }
+                                text: "Save Patched .hex...";
+                                enabled: root.display-hex-path != "";
+                                clicked => { root.export-patched-display-hex(root.display-hex-path); }
                             }
                         }
                     }
@@ -672,7 +639,7 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 CheckBox {
-                                    text: "Auto-Unlock on Flash";
+                                    text: "Auto-Unlock on Flash (neutralizes 6 lockout gates)";
                                     checked <=> root.display-auto-unlock;
                                 }
                             }
@@ -698,7 +665,7 @@ export component MainWindow inherits Window {
 
                                 AdwButton {
                                     text: "Test Flash (Dry Run)";
-                                    enabled: !root.display-is-flashing;
+                                    enabled: !root.display-is-flashing && root.display-hex-path != "";
                                     clicked => {
                                         root.flash-display-hex(
                                             root.display-hex-path,
@@ -712,7 +679,7 @@ export component MainWindow inherits Window {
                                 AdwButton {
                                     text: "Flash Display Firmware";
                                     primary: true;
-                                    enabled: !root.display-is-flashing;
+                                    enabled: !root.display-is-flashing && root.display-hex-path != "";
                                     clicked => {
                                         root.flash-display-hex(
                                             root.display-hex-path,
