@@ -76,9 +76,9 @@ We actively track feedback and technical inquiries from the e-bike community. Be
 - **Stock Limitation:** The stock `V6510C` firmware normalizes rider effort against a static $3300\text{ mV}$ ceiling ($3300\text{ mV} - 700\text{ mV} = 2600\text{ mV}$ span), meaning riders rarely utilize more than $40\%\text{--}50\%$ of the configured assist range without artificial amplification.
 - **DM+ Approach:** In DM+, rider effort is calculated strictly from the dynamic span:
   $$\Delta V_{\text{rider}} = V_{\text{applied}} - V_{\text{zero}}$$
-  We are evaluating auto-span calibration where $V_{\text{max}}$ automatically shifts with the tracked resting zero-point:
+  We have implemented `AutoSpanTracking` where $V_{\text{max}}$ automatically shifts with the tracked resting zero-point:
   $$V_{\text{max}} = V_{\text{zero}} + V_{\text{span}}$$
-  allowing riders to reach 100% assist at a realistic mechanical pedal force.
+  allowing riders to reach 100% assist at a realistic mechanical pedal force invariant to temperature.
 
 ### 2. Low-Cadence Power vs. Nylon Primary Reduction Gear (GitHub Issue #2)
 - **Observation:** The DM01 internal primary reduction relies on a composite blue nylon helical gear. Delivering maximum current ($30\text{ A}$ / $\approx 1500\text{ W}$) at very low cadence ($< 20\text{ RPM}$) introduces extreme mechanical shear stress on the gear teeth, creating a risk of tooth stripping under heavy load.
