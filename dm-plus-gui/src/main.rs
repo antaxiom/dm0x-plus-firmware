@@ -260,6 +260,81 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // Callback: Export/Save Patched Display HEX directly to disk
+    let handle_weak = main_window.as_weak();
+    main_window.on_export_patched_display_hex(move |hex_path| {
+        if let Some(ui) = handle_weak.upgrade() {
+            let path_str = hex_path.as_str().trim().to_string();
+            if path_str.is_empty() {
+                ui.set_display_status(SharedString::from(
+                    "Please choose a display HEX file first.",
+                ));
+                return;
+            }
+
+            let raw = match fs::read_to_string(&path_str) {
+                Ok(s) => s,
+                Err(e) => {
+                    ui.set_display_status(SharedString::from(format!(
+                        "Cannot read input file: {}",
+                        e
+                    )));
+                    return;
+                }
+            };
+
+            let mut hex_file = match IntelHexFile::parse(&raw) {
+                Ok(h) => h,
+                Err(e) => {
+                    ui.set_display_status(SharedString::from(format!(
+                        "Failed to parse Intel HEX: {:?}",
+                        e
+                    )));
+                    return;
+                }
+            };
+
+            let default_name = std::path::Path::new(&path_str)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| format!("{}-Unlocked.hex", s))
+                .unwrap_or_else(|| "Display-Unlocked.hex".to_string());
+
+            if let Some(save_path) = rfd::FileDialog::new()
+                .add_filter("Intel HEX Firmware (*.hex)", &["hex", "HEX"])
+                .set_file_name(&default_name)
+                .save_file()
+            {
+                match patch_display(&mut hex_file) {
+                    Ok(patches) => {
+                        let count = patches.len();
+                        let encoded = hex_file.to_hex_string();
+                        let save_str = save_path.to_string_lossy().to_string();
+                        if let Err(e) = fs::write(&save_str, encoded) {
+                            ui.set_display_status(SharedString::from(format!(
+                                "Failed to write file: {}",
+                                e
+                            )));
+                            return;
+                        }
+                        ui.set_display_status(SharedString::from(format!(
+                            "Neutralized {} lockout gates. Saved to '{}'",
+                            count, save_str
+                        )));
+                        ui.set_display_is_locked(false);
+                        ui.set_display_lockout_status(SharedString::from("UNLOCKED (Patched)"));
+                    }
+                    Err(e) => {
+                        ui.set_display_status(SharedString::from(format!(
+                            "Patching failed: {:?}",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
+    });
+
     // Callback: Browse Display Output HEX File
     let handle_weak = main_window.as_weak();
     main_window.on_browse_display_output_hex(move || {
