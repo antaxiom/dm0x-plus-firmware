@@ -14,7 +14,6 @@ use dm01_firmware::serial::{
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::fs;
-use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
@@ -33,19 +32,31 @@ fn query_ports_model() -> (ModelRc<SharedString>, SharedString) {
     }
 }
 
-fn resolve_motor_pack_path(source: &str, custom_path: &str) -> Option<String> {
-    if source.contains("Open Firmware") {
-        let open_build = "build/TO7-DM01-OpenFirmware-v0.3.0.Pack";
-        if Path::new(open_build).exists() {
-            return Some(open_build.to_string());
-        }
+const EMBEDDED_DM01_OPEN_PACK: &[u8] =
+    include_bytes!("../assets/TO7-DM01-OpenFirmware-v0.3.0.Pack");
+
+fn get_motor_pack_bytes(source: &str, custom_path: &str) -> Result<Vec<u8>, String> {
+    if source.contains("Open Firmware") || source.contains("Built-in") {
+        return Ok(EMBEDDED_DM01_OPEN_PACK.to_vec());
     } else if source.contains("Custom") {
         let trimmed = custom_path.trim();
-        if !trimmed.is_empty() && Path::new(trimmed).exists() {
-            return Some(trimmed.to_string());
+        if trimmed.is_empty() {
+            return Err(
+                "No custom .Pack file path specified. Click 'Choose File...' to select one."
+                    .to_string(),
+            );
         }
+        let bytes = fs::read(trimmed).map_err(|e| format!("Error reading '{}': {}", trimmed, e))?;
+        if bytes.len() != PACK_FILE_SIZE {
+            return Err(format!(
+                "'{}' is {} bytes (expected 128 KB .Pack file).",
+                trimmed,
+                bytes.len()
+            ));
+        }
+        return Ok(bytes);
     }
-    None
+    Err(format!("Unknown firmware source: '{}'", source))
 }
 
 fn do_inspect_display_hex(ui: &MainWindow, path_str: &str) {
@@ -256,30 +267,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 let custom_path = custom_path_str.as_str().to_string();
                 let _is_dm01 = target_str.contains("DM01");
 
-                // Resolve target .Pack file
-                let pack_path = match resolve_motor_pack_path(&source, &custom_path) {
-                    Some(p) => p,
-                    None => {
-                        ui.set_motor_status(SharedString::from(format!(
-                            "Error: Firmware file not found for '{}'. Build or browse to file.",
-                            source
-                        )));
-                        return;
-                    }
-                };
-
-                let pack_bytes = match fs::read(&pack_path) {
-                    Ok(b) if b.len() == PACK_FILE_SIZE => b,
-                    Ok(b) => {
-                        ui.set_motor_status(SharedString::from(format!(
-                            "Error: '{}' is {} bytes (expected 128 KB .Pack).",
-                            pack_path,
-                            b.len()
-                        )));
-                        return;
-                    }
-                    Err(e) => {
-                        ui.set_motor_status(SharedString::from(format!("Error reading '{}': {}", pack_path, e)));
+                // Resolve target .Pack bytes (uses embedded firmware for built-in, or reads custom file)
+                let pack_bytes = match get_motor_pack_bytes(&source, &custom_path) {
+                    Ok(b) => b,
+                    Err(err_msg) => {
+                        ui.set_motor_status(SharedString::from(err_msg));
                         return;
                     }
                 };

@@ -12,5 +12,6 @@ blobs/*
 *.bin
 *.hex
 *.elf
+!dm-plus-gui/assets/*.Pack
 dist/
 stage/

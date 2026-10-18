@@ -9,7 +9,7 @@ An open-source, `#![no_std]` Embedded Rust firmware recompilation, container too
 
 ---
 
-## 🎯 The Vision: "Mega Firmware" + Smart Display Ecosystem
+## Project Vision: Unified Firmware & Smart Display Ecosystem
 
 Most e-bike firmware mods force riders into a frustrating cycle: disconnect the bike, plug in a programming cable, run a proprietary PC flashing utility, tweak a number, re-flash, test ride, and repeat.
 
@@ -21,7 +21,7 @@ Most e-bike firmware mods force riders into a frustrating cycle: disconnect the 
 
 ---
 
-## ✨ Improvements & Advancements in Open Firmware (`v0.3.0`)
+## Improvements & Advancements in Open Firmware (`v0.3.0`)
 
 Compared to proprietary factory firmware (`V6510C`), the open `#![no_std]` firmware introduces major architectural, safety, and ride-feel enhancements while maintaining 100% hardware compatibility:
 
@@ -42,7 +42,7 @@ Compared to proprietary factory firmware (`V6510C`), the open `#![no_std]` firmw
 
 ---
 
-## 🛠️ Quickstart & Tooling Guide
+## Quickstart & Tooling Guide
 
 ### Prerequisites
 - [Rust toolchain](https://rustup.rs/) (stable, 1.75+)
@@ -120,12 +120,12 @@ cargo run --manifest-path dm-plus-gui/Cargo.toml
 
 ---
 
-## 🖥️ DM+ Firmware Studio (Slint Desktop GUI)
+## DM+ Firmware Studio (Slint Desktop GUI)
 
 **DM+ Firmware Studio** (`dm-plus-gui`) is a native, cross-platform graphical desktop application built with [Slint](https://slint.dev/) and powered directly by the `dm01-firmware` engine:
 
 ```bash
-# Launch the desktop studio
+# Launch the desktop studio from source
 cargo run --manifest-path dm-plus-gui/Cargo.toml
 
 # Package local release archives (CLI + GUI) into dist/
@@ -136,53 +136,49 @@ cargo run --manifest-path dm-plus-gui/Cargo.toml
 - **Automated Matrix CI/CD (`.github/workflows/release.yml`)**: Builds native binaries for **Linux (x86_64)**, **macOS Universal (Apple Silicon + Intel)**, and **Windows (x64)** without local cross-compilation overhead.
 - **Local Host Packager (`scripts/package-release.sh`)**: Builds and bundles the current host's CLI archive and Desktop app (`.app` on macOS, `.tar.gz` on Linux) into `dist/` with SHA-256 checksums.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   ToSeven Control Center (GUI Blueprint)              │
-├──────────────────────────────┬─────────────────────────────────────────┤
-│  🎯 Device Selection         │  ⚡ Motor Controller Tuning (.Pack)    │
-│  [●] DM01 / DM02 Controller  │  - Cadence Scaling: [ Uncapped ▾ ]      │
-│  [ ] T24V / T154 Display     │  - Torque Response: [ Progressive ▾ ]   │
-│  Port: [/dev/tty.usbserial▾] │  - Assist Ceiling:  [ Unified Level ▾ ] │
-│  Status: Connected (115200)  │  - Max Current:     [ 30.0 A          ] │
-├──────────────────────────────┼─────────────────────────────────────────┤
-│  🖥️ Display Firmware (.hex)  │  📊 Real-Time Diagnostic Telemetry      │
-│  File: TO7-T24V-Y241225.hex  │  - Battery: 52.4 V | Current: 0.0 A     │
-│  Status: 6 Lockout Gates     │  - Temp: 28.5 °C   | Cadence: 0 RPM     │
-│  [✓] Auto-Unlock Advanced    │  - Throttle: 0.95V | Hall: [H1 H2 H3]   │
-│      Menu On Flash           │                                         │
-├──────────────────────────────┴─────────────────────────────────────────┤
-│  [ Inspect Image ]      [ Patch .hex ]      [ Flash Firmware ]         │
-└────────────────────────────────────────────────────────────────────────┘
-```
+### Opening on macOS (Gatekeeper & Privacy Restrictions)
+
+Because release binaries downloaded from GitHub are not signed with an Apple Developer Program certificate, macOS Gatekeeper may show a security notice such as *"DM+ Firmware Studio.app cannot be opened because Apple cannot check it for malicious software"* or *"developer cannot be verified"*.
+
+To open the application on macOS:
+1. **Finder Context Menu:** Right-click (or Control-click) `DM+ Firmware Studio.app` in Finder, select **Open**, and then click **Open** in the confirmation dialog.
+2. **System Settings:** Open **System Settings > Privacy & Security**, scroll down to the **Security** section, and click **Open Anyway**.
+3. **Terminal (Strip Quarantine):** Remove the quarantine attribute directly:
+   ```bash
+   xattr -cr "/path/to/DM+ Firmware Studio.app"
+   ```
+   For the standalone CLI binary:
+   ```bash
+   xattr -c toseven_pack && chmod +x toseven_pack
+   ```
 
 ### Architectural Design & Decoupling
 1. **Core Decoupling:** All business logic, container ciphers, Intel HEX manipulations, and serial state machines reside in `dm01-firmware` (`display_patcher.rs`, `flasher.rs`, `serial.rs`, `pack.rs`).
 2. **GUI Framework Architecture:**
-   - **Slint (Selected):** Pure Rust declarative UI framework providing native styling, sub-millisecond startup, minimal binary footprint, and seamless cross-platform desktop integration directly backed by the `dm01-firmware` crate.
-3. **Core GUI Features Planned:**
-   - **Auto-Discovery:** Automatically scans USB devices for vendor IDs (MegaHunt USB CDC `MH1903 ROM BOOT`, FTDI/CH340 serial converters).
-   - **One-Click Unlock:** Drag and drop any locked display `.hex` file, click "Unlock & Flash", and immediately regain full Advanced Menu access.
-   - **Visual Power Curve Editor:** Interactive curve sliders visualizing torque ramp, cadence scaling, and thermal rollback.
-   - **Bench Safety Interlock:** Guides the user through 48V current-limited bench power supply setup before committing writes.
+   - **Slint:** Pure Rust declarative UI framework providing native styling, sub-millisecond startup, minimal binary footprint, and seamless cross-platform desktop integration directly backed by the `dm01-firmware` crate.
+3. **Core GUI Features:**
+   - **Self-Contained Firmware:** The official DM01 Open Firmware container is embedded directly into the executable, requiring no external file lookups.
+   - **Native System File Pickers:** Uses native OS dialogs (`rfd`) with enforced extension filters (`.Pack` for motor controllers, `.hex` for displays).
+   - **Non-Blocking Serial I/O:** Flashing runs on background worker threads with connection timeouts to keep the interface fully responsive.
+   - **One-Click Unlock:** Select any locked display `.hex` file to automatically neutralize all 6 post-October 2024 restriction gates.
 
 ---
 
-## 🔍 Hardware Feasibility & Roadmap to Initial Release
+## Hardware Feasibility & Roadmap to Initial Release
 
 ### Can this compile into something that will run on the bike right now?
 **Display firmware unlocking & flashing (`toseven_pack display patch/flash`) and stock motor `.Pack` flashing are ready for hardware today.** The custom bare-metal Cortex-M4F motor firmware (`dm01_firmware`) also compiles cleanly into a standalone ELF and packages into an official 128 KB `.Pack` container, with `TIM1` booting safely in High-Z (`MOE = 0`, 50% neutral duty). However, **do not flash the custom bare-metal motor firmware onto a live bike yet**: multi-channel DMA/ADC scan sequencing, `TIM1_UP` ISR timing, and UART ISR wiring in `hal.rs` / `firmware.rs` still require verification on a **48V current-limited bench power supply** in Phase 3.
 
 ```
-[Phase 1: Algorithmic Core]       ✅ (Done: FOC, Power Curves, EEPROM, Pack Tooling)
+[Phase 1: Algorithmic Core]       [Done] (FOC, Power Curves, EEPROM, Pack Tooling)
             │
-[Phase 2.1: Hardware Binding]     ✅ (Done: Volatile PAC, Safe High-Z TIM1 PWM, Hall+PLL, memory.ld)
+[Phase 2.1: Hardware Binding]     [Done] (Volatile PAC, Safe High-Z TIM1 PWM, Hall+PLL, memory.ld)
             │
-[Phase 2.2: Standalone .Pack]     ✅ (Done: Native ELF extraction, 128 KB .Pack, Live Serial & Monitor)
+[Phase 2.2: Standalone .Pack]     [Done] (Native ELF extraction, 128 KB .Pack, Live Serial & Monitor)
             │
-[Phase 3: Bench Verification]     ⏳ (Next: ADC DMA scan sequencing + 48V current-limited bench test)
+[Phase 3: Bench Verification]     [In Progress] (ADC DMA scan sequencing + 48V current-limited bench test)
             │
-[Phase 4: Public v1.0 Release]    🎉 (Initial DM01 Open Firmware Release)
+[Phase 4: Public v1.0 Release]    [Planned] (Initial DM01 Open Firmware Release)
 ```
 
 ### What was completed in Phase 2?
@@ -214,7 +210,7 @@ cargo run --manifest-path dm-plus-gui/Cargo.toml
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```text
 ├── dm01-firmware/           # Core #![no_std] Rust firmware crate & CLI
@@ -265,7 +261,7 @@ cargo run --manifest-path dm-plus-gui/Cargo.toml
 
 ---
 
-## ⚖️ Clean-Room & Legal Notice
+## Clean-Room & Legal Notice
 
 This project is a clean-room reverse-engineering, documentation, and open-source re-implementation effort created strictly for interoperability, research, and educational purposes.
 
@@ -275,7 +271,7 @@ This project is a clean-room reverse-engineering, documentation, and open-source
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please ensure all code additions:
 1. Retain strict `#![no_std]` embedded compatibility for core controller modules.
