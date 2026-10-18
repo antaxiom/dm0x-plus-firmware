@@ -12,7 +12,7 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.2`)
+## What Is Implemented Right Now (`v0.3.0-beta.3`)
 
 Rather than relying on future promises, here is the verified functionality available today in this repository:
 
@@ -20,6 +20,9 @@ Rather than relying on future promises, here is the verified functionality avail
    - Native cross-platform desktop application built with Slint and Rust.
    - Built-in embedded DM01 Open Firmware container (`128 KB`) for instant, standalone flashing.
    - Native system file pickers (`rfd`) with enforced extension filters (`.Pack` and `.hex`).
+   - Stabilized card geometry with persistent file path rows, fixed-height helper containers, and balanced 50/50 tuning cards that never shift or resize dynamically.
+   - Dedicated "Save Patched .hex..." export button in the Display Patcher card to generate and save unlocked Intel HEX firmware offline without requiring serial hardware.
+   - Synchronized ISP and Motor Flashing windows with uniform 380 px port selectors, 120 px label columns, and identical compact card heights.
    - Non-blocking asynchronous flashing engine with serial connection timeouts.
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
 
@@ -37,12 +40,15 @@ Rather than relying on future promises, here is the verified functionality avail
 4. **Clean-Room Motor Controller Architecture (`dm01-firmware`):**
    - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time clamps ($[6.0\%, 94.0\%]$), and Hall observer.
    - Complete 3-stage power curve pipeline modeled after the decompiled `V6510C` integer math.
-   - Source-level tuning profiles: uncapped cadence, progressive quadratic torque response, and unified level assist ceilings.
+   - **Automatic Span Tracking (`AutoSpanTracking`):** Dynamic $V_{\text{max}} = V_{\text{zero}} + 2300\text{ mV}$ scaling pinning nominal deflection to $2.3\text{ V}$, eliminating thermal zero-point drift and matching realistic human pedal deflection (GitHub Issue #1).
+   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft current ($\le 30\%$) below $18\text{ RPM}$ to protect the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at $35\text{ RPM}$ with progressive quadratic modulation (GitHub Issue #2).
+   - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact $0.0\text{ A}$ at $V_{\text{LVC}}$ across the $3.0\text{ V}$ reserve cushion, replacing the stock 25% floor to eliminate sudden BMS disconnects under battery sag (GitHub Issue #3).
+   - Source-level tuning profiles: gear-safe progressive, commuter comfort, uncapped cadence (metal gear only), progressive quadratic torque response, and unified level assist ceilings.
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16.
    - Standalone bare-metal Cortex-M4F binary (`dm01_firmware`) with dedicated vector table, peripheral register mappings (`pac.rs`), and safe High-Z gate-driver hardware drivers (`hal.rs`).
 
 5. **Physical Simulation & Verification Suite:**
-   - 45 automated unit, integration, and end-to-end physical simulation tests running in CI.
+   - 48 automated unit, integration, and end-to-end physical simulation tests running in CI.
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
 
 6. **Safety & Bench Bring-up Runbook:**
@@ -74,23 +80,26 @@ We actively track feedback and technical inquiries from the e-bike community. Be
 ### 1. Torque Sensor Dynamic Range & Auto-Zero Drift (GitHub Issue #1)
 - **Observation:** In physical testing, riders cannot mechanically deflect the DM01 torque strain gauge to the nominal $3.3\text{ V}$ ceiling (even steep hill climbing without motor assist yields a maximum of $\approx 2.7\text{ V}$, with typical hard efforts reaching $1.7\text{ V}$ to $2.0\text{ V}$). Furthermore, the resting zero-point voltage drifts thermally between $0.6\text{ V}$ and $0.9\text{ V}$.
 - **Stock Limitation:** The stock `V6510C` firmware normalizes rider effort against a static $3300\text{ mV}$ ceiling ($3300\text{ mV} - 700\text{ mV} = 2600\text{ mV}$ span), meaning riders rarely utilize more than $40\%\text{--}50\%$ of the configured assist range without artificial amplification.
-- **DM+ Approach:** In DM+, rider effort is calculated strictly from the dynamic span:
+- **DM+ Implementation:** In DM+, rider effort is calculated strictly from the dynamic span:
   $$\Delta V_{\text{rider}} = V_{\text{applied}} - V_{\text{zero}}$$
-  We have implemented `AutoSpanTracking` where $V_{\text{max}}$ automatically shifts with the tracked resting zero-point:
-  $$V_{\text{max}} = V_{\text{zero}} + V_{\text{span}}$$
-  allowing riders to reach 100% assist at a realistic mechanical pedal force invariant to temperature.
+  We have implemented `TorqueSpanPolicy::AutoSpanTracking { nominal_span_mv: 2300 }` where $V_{\text{max}}$ automatically shifts with the tracked resting zero-point:
+  $$V_{\text{max}} = V_{\text{zero}} + 2300\text{ mV}$$
+  Rider effort is computed as $\text{Effort} = \frac{V_{\text{applied}} - V_{\text{zero}}}{2300\text{ mV}}$, ensuring that a given pedal strain always delivers identical assist regardless of thermal drift, and allowing riders to reach 100% assist within realistic mechanical pedal deflection. Available in firmware and exposed via the `Commuter Comfort (Auto-Span)` preset.
 
 ### 2. Low-Cadence Power vs. Nylon Primary Reduction Gear (GitHub Issue #2)
-- **Observation:** The DM01 internal primary reduction relies on a composite blue nylon helical gear. Delivering maximum current ($30\text{ A}$ / $\approx 1500\text{ W}$) at very low cadence ($< 20\text{ RPM}$) introduces extreme mechanical shear stress on the gear teeth, creating a risk of tooth stripping under heavy load.
+- **Observation:** The DM01 internal primary reduction relies on a composite blue nylon helical gear. Delivering maximum current ($30\text{ A}$ / $\approx 1500\text{ W}$) at very low cadence ($< 18\text{ RPM}$) introduces extreme mechanical shear stress on the gear teeth, creating a severe risk of tooth stripping under standing-start pedal stomps.
 - **Stock Limitation:** Stock firmware penalizes low-cadence climbing with a rigid $\frac{\text{Cadence}}{60\text{ RPM}}$ multiplier, cutting power by 60% at 25 RPM. While this protects the plastic gear, it causes riders to stall on steep trail inclines.
-- **DM+ Approach:** Power delivery is decoupled into selectable, transparent tuning profiles:
-  - `Stock60Rpm`: Retains the conservative stock linear ramp for maximum mechanical longevity.
-  - `GearSafeKnee`: Provides full torque response down to $25\text{ RPM}$, with a protective soft torque ceiling below $20\text{ RPM}$ to shield the nylon gear from dead-stop shock loads.
-  - `Uncapped`: Delivers 100% requested torque assist down to $5\text{ RPM}$ for riders running reinforced all-metal gear sets or specialized applications.
+- **DM+ Implementation:** Power delivery is decoupled into selectable, transparent tuning profiles:
+  - `GearSafeKnee` (**Default / Recommended**): Implements a soft-knee curve providing protective low assist ($\le 30\%$) below $18\text{ RPM}$ to shield gear teeth from standing starts, then ramps linearly to 100% assist at $35\text{ RPM}$ with full torque across the entire active pedaling band ($35\text{--}110+\text{ RPM}$).
+  - `Stock60Rpm`: Retains the conservative stock linear ramp for riders seeking factory throttle and PAS behavior.
+  - `UncappedCadence` (**Metal Gear Only**): Immediate full torque assist down to $5\text{ RPM}$ for riders running aftermarket steel/PEEK primary reduction gears. Clearly marked with red safety warnings in the GUI Studio.
 
 ### 3. Battery LVC Cushion & True Zero-Current Cutoff (GitHub Issue #3)
 - **Observation:** The stock firmware features a $3.0\text{ V}$ reserve cushion above Low-Voltage Cutoff (LVC), but tapers current down to a $25\%$ floor rather than fully cutting off motor power. If an overloaded battery sags further, this $25\%$ residual draw can trigger a harsh, sudden BMS trip.
-- **DM+ Approach:** DM+ implements a true taper to $0.0\text{ A}$ anchored to the user's configured $0\%$ battery voltage threshold. Power tapers smoothly across the reserve band down to an absolute zero current cutoff at LVC, preventing cell over-discharge and sudden BMS shutdowns while riding.
+- **DM+ Implementation:** DM+ implements `LvcCushionPolicy::TrueZeroCutoff` with `apply_true_zero_lvc_cushion_da()`:
+  - Above $V_{\text{LVC}} + 3.0\text{ V}$: 100% configured current limit is available.
+  - Across the $3.0\text{ V}$ cushion ($V_{\text{LVC}} \le V \le V_{\text{LVC}} + 3.0\text{ V}$): Current linearly tapers from $100\%$ down to **exactly $0.0\text{ A}$** at $V_{\text{LVC}}$.
+  - At or below $V_{\text{LVC}}$: PWM output is completely suppressed ($0\text{ A}$), preventing battery sag below cell manufacturer limits and eliminating abrupt BMS shutdowns under load.
 
 ---
 
@@ -103,7 +112,7 @@ We actively track feedback and technical inquiries from the e-bike community. Be
 
 | Feature / Subsystem | Stock Factory Firmware (`V6510C`) | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
 | :--- | :--- | :--- | :--- |
-| **Low-Cadence Climbing Power** | Strict $\frac{\text{Cadence}}{60\text{ RPM}}$ scaling; assist is cut by **60%** at 25 RPM (only 2.5 A / 125 W delivered) | **Selectable Profiles:** Gear-safe knee or uncapped cadence delivering full assist down to target RPM | Up to 2.5× more power on steep hill starts without stalling |
+| **Low-Cadence Climbing Power** | Strict $\frac{\text{Cadence}}{60\text{ RPM}}$ scaling; assist is cut by **60%** at 25 RPM (only 2.5 A / 125 W delivered) | **Selectable Profiles:** Gear-Safe Progressive (default, protects nylon gear under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | Up to 2.5× more power on steep hill starts without gear damage |
 | **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor **ignores** assist level `Pwr%` and uses only Mode Max | **Unified Level Ceiling Policy:** Optional profile enforcing that torque assist respects assist level `Pwr%` | True fine-grained battery conservation and level-separated power control |
 | **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, exponential boost on steep climbs | Natural, intuitive MTB trail feel; less leg strain for urban commuters |
 | **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes instantly to physical Hall pins; decays to zero velocity when stationary | Smooth, instantaneous takeoff without jerky shudder or runaway assist |
@@ -111,10 +120,10 @@ We actively track feedback and technical inquiries from the e-bike community. Be
 | **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to $[6.0\%, 94.0\%]$ ($1.5\,\mu\text{s}$ margin) | Eliminates high-side/low-side FET shoot-through risk under heavy transients |
 | **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous 0 ms High-Z Shutdown:** Brake lever (`PB12`), backpedaling, Hall fault (`0b000`/`0b111`), or gear shift sensor | Immediate motor disengagement for maximum rider safety |
 | **Thermal Protection** | Sudden cliff or delayed step reduction | **Smooth Continuous Linear Rollback:** Continuous linear derating from 70°C down to 0.0 A at 100°C | No jarring sudden loss of power; keeps motor running smoothly while cooling |
-| **Battery LVC Cushion** | Fixed 3.0V cushion (39V..42V) tapering down to 25% current floor | **Cell-Aware Proportional Cushion & True 0A Taper:** Linear taper down to 0.0 A at LVC | Prevents abrupt battery BMS shutdowns under heavy hill climbing or acceleration |
+| **Battery LVC Cushion** | Fixed 3.0V cushion (39V..42V) tapering down to 25% current floor | **True Zero Cutoff (TrueZeroCutoff):** Linear taper down to exact 0.0 A at LVC; completely suppresses PWM below LVC | Eliminates abrupt battery BMS shutdowns under heavy hill climbing or acceleration |
 | **Multi-Voltage Adaptability** | Hardcoded 50.0V constant-power cap; poor 36V / 52V optimization | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages without bricking |
-| **Display Compatibility** | Post-October 2024 menu lockouts lock users out of settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15` | Regain full access to `Speed&Power`, current limits, and wheel circumference |
-| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
+| **Display Compatibility** | Post-October 2024 menu lockouts lock users out of settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15`, with live USB flashing or direct `.hex` export | Regain full access to `Speed&Power`, current limits, and wheel circumference |
+| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, export patched hex | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
 
 </details>
 
