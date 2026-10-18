@@ -197,6 +197,73 @@ pub fn repack_firmware(
     Ok(())
 }
 
+/// Extracts the raw contiguous Flash payload from an ELF32 binary (little-endian ARM)
+/// linked for execution starting at `APP_FLASH_BASE_ADDR` (0x08001800).
+#[cfg(feature = "std")]
+pub fn extract_flash_from_elf(data: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if data.len() < 52 || &data[0..4] != b"\x7fELF" {
+        return Err("Not a valid ELF binary");
+    }
+    // Check 32-bit (data[4] == 1) and little-endian (data[5] == 1)
+    if data[4] != 1 || data[5] != 1 {
+        return Err("ELF is not 32-bit little-endian ARM");
+    }
+
+    let phoff = u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
+    let phentsize = u16::from_le_bytes(data[0x2A..0x2C].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes(data[0x2C..0x2E].try_into().unwrap()) as usize;
+
+    let mut segments = Vec::new();
+    let mut min_addr = u32::MAX;
+    let mut max_addr = 0u32;
+
+    for i in 0..phnum {
+        let entry_offset = phoff + i * phentsize;
+        if entry_offset + 32 > data.len() {
+            break;
+        }
+        let seg_bytes = &data[entry_offset..entry_offset + 32];
+        let p_type = u32::from_le_bytes(seg_bytes[0..4].try_into().unwrap());
+        let p_offset = u32::from_le_bytes(seg_bytes[4..8].try_into().unwrap()) as usize;
+        let p_paddr = u32::from_le_bytes(seg_bytes[12..16].try_into().unwrap());
+        let p_filesz = u32::from_le_bytes(seg_bytes[16..20].try_into().unwrap()) as usize;
+
+        // PT_LOAD = 1
+        if p_type == 1 && p_filesz > 0 {
+            // Flash load segments (e.g. 0x08001800..0x08080000)
+            if (APP_FLASH_BASE_ADDR..0x0808_0000).contains(&p_paddr) {
+                let seg_end = p_paddr + p_filesz as u32;
+                if p_paddr < min_addr {
+                    min_addr = p_paddr;
+                }
+                if seg_end > max_addr {
+                    max_addr = seg_end;
+                }
+                segments.push((p_paddr, p_offset, p_filesz));
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        return Err("No PT_LOAD segments found in Flash region (>= 0x08001800)");
+    }
+
+    let base = APP_FLASH_BASE_ADDR;
+    let total_size = (max_addr - base) as usize;
+    let mut flash_image = vec![0xFFu8; total_size];
+
+    for (paddr, offset, filesz) in segments {
+        let dst_start = (paddr - base) as usize;
+        let dst_end = dst_start + filesz;
+        let src_end = offset + filesz;
+        if src_end <= data.len() && dst_end <= flash_image.len() {
+            flash_image[dst_start..dst_end].copy_from_slice(&data[offset..src_end]);
+        }
+    }
+
+    Ok(flash_image)
+}
+
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
@@ -284,5 +351,44 @@ mod tests {
         repack_firmware(&meta, &payload, Some(&raw_pack), &mut repacked)
             .expect("repack DM02 firmware");
         assert_eq!(&repacked[..], &raw_pack[..]);
+    }
+
+    #[test]
+    fn test_extract_flash_from_elf_synthetic() {
+        // Construct minimal valid ELF32
+        let mut elf = vec![0u8; 128];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 1; // 32-bit
+        elf[5] = 1; // little endian
+        elf[6] = 1; // version
+                    // e_phoff at 0x1C = 0x34
+        elf[0x1C..0x20].copy_from_slice(&0x34u32.to_le_bytes());
+        // e_phentsize at 0x2A = 32
+        elf[0x2A..0x2C].copy_from_slice(&32u16.to_le_bytes());
+        // e_phnum at 0x2C = 1
+        elf[0x2C..0x2E].copy_from_slice(&1u16.to_le_bytes());
+
+        // Program header at 0x34 (32 bytes):
+        // p_type = 1 (PT_LOAD)
+        elf[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
+        // p_offset = 0x60
+        elf[0x38..0x3C].copy_from_slice(&0x60u32.to_le_bytes());
+        // p_vaddr = 0x08001800
+        elf[0x3C..0x40].copy_from_slice(&0x0800_1800u32.to_le_bytes());
+        // p_paddr = 0x08001800
+        elf[0x40..0x44].copy_from_slice(&0x0800_1800u32.to_le_bytes());
+        // p_filesz = 16
+        elf[0x44..0x48].copy_from_slice(&16u32.to_le_bytes());
+        // p_memsz = 16
+        elf[0x48..0x4C].copy_from_slice(&16u32.to_le_bytes());
+
+        // Payload data at 0x60..0x70
+        elf[0x60..0x64].copy_from_slice(&0x2000_5628u32.to_le_bytes()); // MSP
+        elf[0x64..0x68].copy_from_slice(&0x0800_1851u32.to_le_bytes()); // Reset
+
+        let flash = extract_flash_from_elf(&elf).expect("extract synthetic ELF");
+        assert_eq!(flash.len(), 16);
+        assert_eq!(&flash[0..4], &0x2000_5628u32.to_le_bytes());
+        assert_eq!(&flash[4..8], &0x0800_1851u32.to_le_bytes());
     }
 }

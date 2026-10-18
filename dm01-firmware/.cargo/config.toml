@@ -1,0 +1,2 @@
+# Target configuration for bare-metal Cortex-M4F
+[target.thumbv7em-none-eabihf]

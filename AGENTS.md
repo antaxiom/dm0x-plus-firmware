@@ -25,8 +25,12 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
   - [`src/protocol.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/protocol.rs) — Display UART protocol with `0x69` stream XOR cipher and ToSeven CRC-16 verification.
   - [`src/stock.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/stock.rs) — Pinned SHA-256 registry of known official factory `.Pack` releases.
   - [`src/sha256.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sha256.rs) — Dependency-free `#![no_std]` SHA-256 digest engine.
-  - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs), [`src/hal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/hal.rs) — High-level controller state machines and hardware abstraction traits.
-  - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — CLI utility (`toseven_pack`) to inspect, unpack, repack, create, and verify `.Pack` firmware containers.
+  - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs) — High-level controller state machines.
+  - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `SCB`).
+  - [`src/hal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/hal.rs) — Concrete hardware drivers (`Dm01PwmHardware` for 16 kHz complementary PWM with dead-time, `Dm01SensorsHardware`).
+  - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) — Standalone bare-metal Cortex-M4F firmware entry point, vector table (MSP `0x20005628`), and FOC control loop.
+  - [`memory.ld`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/memory.ld) & [`build.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/build.rs) — Cortex-M4F Flash (`0x08001800`) / SRAM (`0x20000000`) linker script with automated cargo search configuration.
+  - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — CLI utility (`toseven_pack`) to inspect, unpack, repack, create (directly from ELF or raw binary), objcopy, and verify `.Pack` firmware containers.
 - [`blobs/`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/blobs/README.md) — External proprietary assets (.gitignore'd for clean-room legal safety):
   - `blobs/firmware/` (`dm01/`, `dm02/` stock `.Pack` files)
   - `blobs/displays/` (hex firmware dumps for `T24V`, `T154`, `M15`, `LCD135C`)
@@ -84,10 +88,19 @@ cargo clippy --manifest-path dm01-firmware/Cargo.toml --all-targets -- -D warnin
 # Verify strict #![no_std] embedded compilation
 cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
 
+# Build standalone bare-metal Cortex-M4F ELF binary
+cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --release
+
+# Extract raw Flash binary from ELF
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
+
+# Package bare-metal firmware directly from ELF or raw binary into official 128 KB .Pack container
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+
+# Inspect generated .Pack container
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+
 # Inspect and verify DM01 and DM02 stock .Pack containers
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack"
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack"
-
-# Create a fresh .Pack file from any raw ARM binary
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 <payload.bin> <output.Pack>
 ```

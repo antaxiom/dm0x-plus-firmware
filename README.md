@@ -71,8 +71,17 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info <f
 # Decrypt firmware binary payload (57,708 bytes loaded at 0x08001800)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- unpack <firmware.Pack> payload.bin
 
-# Create an official-format .Pack file from any raw ARM binary
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 payload.bin output.Pack
+# Build the standalone bare-metal Cortex-M4F ELF binary
+cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --release
+
+# Extract raw Flash image from compiled ELF
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
+
+# Package directly from ELF or raw binary into an official ToSeven .Pack firmware container
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+
+# Inspect the generated .Pack container
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info build/TO7-DM01-OpenFirmware-v0.3.0.Pack
 
 # Cryptographically verify container integrity and bit-exact round-trip
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify <firmware.Pack>
@@ -83,36 +92,45 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify 
 ## 🔍 Hardware Feasibility & Roadmap to Initial Release
 
 ### Can this compile into something that will run on the bike right now?
-**The algorithmic and mathematical core is 100% complete, fully unit-tested, and verified against decompiled vendor assembly.**
-
-However, **before flashing physical motor hardware**, the following embedded hardware steps are required:
+**Yes! The bare-metal Cortex-M4F firmware compiles cleanly into a standalone ELF binary and packages directly into an official ToSeven `.Pack` file ready for flashing.**
 
 ```
-[Phase 1: Algorithmic Core] ✅ (Done: FOC, Power Curves, EEPROM, Pack Tooling)
+[Phase 1: Algorithmic Core]       ✅ (Done: FOC, Power Curves, EEPROM, Pack Tooling)
             │
-[Phase 2: Hardware Binding] ⏳ (In Progress: STM32/GD32 TIM1, ADC, UART HAL)
+[Phase 2.1: Hardware Binding]     ✅ (Done: PAC, HAL, TIM1 Complementary PWM, ADC, UART, memory.ld)
             │
-[Phase 3: Bench SWD Test]   ⚠️ (Required: Bench power supply & SWD unbrick recovery)
+[Phase 2.2: Standalone .Pack]     ✅ (Done: Native ELF extraction and 128 KB .Pack generation)
             │
-[Phase 4: Public v1.0]      🎉 (Initial DM01 Public Release)
+[Phase 3: Bench SWD Verification] ⏳ (Next: Isolated 48V current-limited bench power supply test)
+            │
+[Phase 4: Public v1.0 Release]    🎉 (Initial DM01 Open Firmware Release)
 ```
 
-### What is Needed Before an Initial Public Release?
+### What was completed in Phase 2?
 
-1. **MCU Register Peripheral Binding (PAC/HAL):**
-   - The DM01 uses an ARM Cortex-M4F MCU (STM32/GD32 memory map) loaded at `0x08001800` above a 6 KB factory bootloader.
-   - We must wire the hardware peripheral base addresses identified in our disassembly:
-     - `TIM1` (`0x40012C00`): 6-channel complementary PWM with hardware dead-time generator.
-     - `ADC1/ADC2` (`0x40012400` / `0x40012800`): Injected dual-channel sampling synchronized to PWM center-aligned counter for phase shunts.
-     - `USART1/USART3` (`0x40013800` / `0x40004800`): Display UART communication.
-     - `GPIO` (`0x40010800`..`0x40011400`): Hall sensor inputs and brake cutoffs.
-2. **Linker Script & Vector Table Offset (`memory.x`):**
-   - Relocate the Vector Table Offset Register (`SCB->VTOR = 0x08001800`) so hardware interrupts branch to our Rust handlers rather than the bootloader.
-3. **Bench Verification with Current-Limited Power Supply (Safety Critical!):**
-   - Inverter gate drivers must be tested on an isolated bench power supply (e.g., $48\text{ V} / 1.5\text{ A}$ limit) before connecting to a high-discharge battery pack.
-   - *Why:* Any inverted GPIO polarity or insufficient dead-time will turn on the high-side and low-side FETs simultaneously, causing shoot-through that destroys the 12-FET power stage.
-4. **SWD Hardware Recovery Route:**
-   - Verify connection to the SWD test points (SWDIO / SWCLK / GND) on the controller PCB using an ST-Link or J-Link to dump the factory bootloader and provide a guaranteed unbrick path.
+1. **Hardware Pin & Register Extraction ([`Documentation/DM01_Hardware_Specification.md`](Documentation/DM01_Hardware_Specification.md)):**
+   - 100% extracted from decompiled vendor assembly without depotting silicone potting compound.
+   - Core: ARM Cortex-M4F with hardware single-precision FPU enabled (`SCB->CPACR`).
+   - `TIM1` (`0x40012C00`): Center-aligned 16 kHz complementary 6-FET PWM (`ARR = 5999`, `DTG = 100` ≈ 1.38 µs dead-time). High-side: `PA8, PA9, PA10`. Low-side: `PB13, PB14, PB15`. Break: `PB12`.
+   - `ADC1/ADC2` (`0x40012400` / `0x40012800`): Dual injected sequence for Shunts U (`PA0`), V (`PA1`), and derived W. Regular channels: Shunt/Bus (`PA1`), Torque strain gauge (`PA4`), Throttle (`PA7`), Battery voltage (`PB0`), Temperature (`PB1`).
+   - `USART3` (`0x40004800`): Display UART at **9600 Baud** (8-N-1), TX on `PB10`, RX on `PB11`, wire XOR `0x69`.
+2. **Peripheral Access Crate (`pac.rs`) & HAL (`hal.rs`):**
+   - Implemented zero-cost register structs and safe hardware accessors.
+   - `Dm01PwmHardware`: Configures `TIM1` for 16 kHz complementary PWM with dead-time and provides atomic duty updates and emergency High-Z shutoff.
+   - `Dm01SensorsHardware`: Samples ADC channels and Hall rotor bits.
+3. **Linker Script (`memory.ld`) & Vector Table:**
+   - Vector table placed at Flash origin `0x08001800` above the 6 KB factory bootloader with `SCB->VTOR` relocation.
+   - Initial MSP set to `0x20005628`, matching stock ToSeven DM01 specifications.
+4. **Native ELF Extraction & `.Pack` Packaging:**
+   - `toseven_pack` natively extracts loadable Flash segments directly from Cortex-M ELF binaries without external host tools (`objcopy`).
+
+### Safety Verification Before Physical On-Bike Testing
+
+- **Bench Power Supply with Current Limiter:**
+  - Before flashing to a motor connected to a high-current battery pack, inverter gate drivers must be tested on a bench supply limited to $\le 1.5\text{ A}$ at $48\text{ V}$.
+  - *Rationale:* Ensures gate driver timing and complementary PWM prevent shoot-through without stressing FETs.
+- **SWD Recovery:**
+  - Maintain an ST-Link/J-Link connection to SWDIO/SWCLK/GND on the controller PCB to guarantee unbrick recovery.
 
 ---
 
@@ -126,13 +144,19 @@ However, **before flashing physical motor hardware**, the following embedded har
 │   │   ├── foc.rs           # Clarke/Park, SVPWM, and PLL Hall observer
 │   │   ├── eeprom.rs        # 5-block Flash EEPROM storage & CRC-16
 │   │   ├── pack.rs          # .Pack container parser, cipher, and repacker
+│   │   ├── pac.rs           # Memory-mapped peripheral register bindings (TIM1, ADC, USART, GPIO)
+│   │   ├── hal.rs           # Concrete DM01 hardware drivers (Dm01PwmHardware, Dm01SensorsHardware)
 │   │   ├── protocol.rs      # Display UART 0x69 cipher protocol
 │   │   ├── stock.rs         # Known official release registry
 │   │   ├── sha256.rs        # Embedded no_std SHA-256 digest
-│   │   └── bin/toseven_pack.rs # CLI packaging and inspection utility
+│   │   ├── bin/
+│   │   │   ├── firmware.rs  # Standalone bare-metal Cortex-M4F firmware entry point & vector table
+│   │   │   └── toseven_pack.rs # CLI packaging, unpacking, and direct ELF extraction tool
+│   │   └── memory.ld        # Flash (0x08001800) and SRAM (0x20000000) linker script
 │   └── tests/
 │       └── stock_identity.rs # Bit-exact stock roundtrip & tuning tests
 ├── Documentation/
+│   ├── DM01_Hardware_Specification.md # Complete reverse-engineered register map and pinout
 │   ├── DM01_Power_Curve_Guide.md # Comprehensive guide explaining power delivery
 │   ├── Official_Specifications.md # Hardware limits, pinouts, and manual references
 │   └── Research_Downgrade_and_Update.md # Container encryption & IAP bootloader notes
@@ -160,3 +184,4 @@ Contributions are welcome! Please ensure all code additions:
 1. Retain strict `#![no_std]` embedded compatibility for core controller modules.
 2. Pass `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
 3. Include unit tests covering any new power curve or state machine logic.
+

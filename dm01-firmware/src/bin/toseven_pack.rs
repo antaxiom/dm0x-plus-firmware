@@ -9,8 +9,8 @@
 
 use dm01_firmware::eeprom::{EepromImage, EEPROM_TOTAL_LEN};
 use dm01_firmware::pack::{
-    decrypt_payload, parse_pack_metadata, repack_firmware, MotorTarget, APP_FLASH_BASE_ADDR,
-    PACK_FILE_SIZE, PACK_HEADER_LEN, PACK_HEADER_MAGIC,
+    decrypt_payload, extract_flash_from_elf, parse_pack_metadata, repack_firmware, MotorTarget,
+    APP_FLASH_BASE_ADDR, PACK_FILE_SIZE, PACK_HEADER_LEN, PACK_HEADER_MAGIC,
 };
 use dm01_firmware::sha256::sha256;
 use dm01_firmware::stock;
@@ -27,7 +27,8 @@ fn print_usage() {
     eprintln!("  toseven_pack info <firmware.Pack>");
     eprintln!("  toseven_pack unpack <firmware.Pack> <decrypted_payload.bin>");
     eprintln!("  toseven_pack repack <template.Pack> <payload.bin> <output.Pack>");
-    eprintln!("  toseven_pack create <dm01|dm02> <payload.bin> <output.Pack>");
+    eprintln!("  toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack>");
+    eprintln!("  toseven_pack objcopy <firmware.elf> <output.bin>");
     eprintln!("  toseven_pack verify <stock.Pack>");
 }
 
@@ -40,10 +41,46 @@ fn main() {
 
     let cmd = args[1].as_str();
 
+    // Handle "objcopy" separately: extracts raw Flash binary from ELF
+    if cmd == "objcopy" {
+        if args.len() < 4 {
+            eprintln!("Usage: toseven_pack objcopy <firmware.elf> <output.bin>");
+            process::exit(1);
+        }
+        let elf_path = &args[2];
+        let out_bin_path = &args[3];
+        let raw_elf = match fs::read(elf_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error reading ELF '{}': {}", elf_path, e);
+                process::exit(1);
+            }
+        };
+        let flash = match extract_flash_from_elf(&raw_elf) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error extracting Flash from ELF '{}': {}", elf_path, e);
+                process::exit(1);
+            }
+        };
+        if let Err(e) = fs::write(out_bin_path, &flash) {
+            eprintln!("Error writing '{}': {}", out_bin_path, e);
+            process::exit(1);
+        }
+        println!(
+            "Successfully extracted {} bytes Flash image to '{}'",
+            flash.len(),
+            out_bin_path
+        );
+        return;
+    }
+
     // Handle "create" separately because it takes a target name instead of an input .Pack
     if cmd == "create" {
         if args.len() < 5 {
-            eprintln!("Usage: toseven_pack create <dm01|dm02> <payload.bin> <output.Pack>");
+            eprintln!(
+                "Usage: toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack>"
+            );
             process::exit(1);
         }
         let target_str = args[2].to_ascii_lowercase();
@@ -59,12 +96,30 @@ fn main() {
             }
         };
 
-        let payload = match fs::read(payload_path) {
+        let raw_input = match fs::read(payload_path) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error reading payload '{}': {}", payload_path, e);
                 process::exit(1);
             }
+        };
+
+        let payload = if raw_input.starts_with(b"\x7fELF") {
+            match extract_flash_from_elf(&raw_input) {
+                Ok(flash) => {
+                    println!(
+                        "Extracted {} bytes Flash image from ELF (0x08001800..)",
+                        flash.len()
+                    );
+                    flash
+                }
+                Err(err) => {
+                    eprintln!("Error extracting Flash from ELF: {}", err);
+                    process::exit(1);
+                }
+            }
+        } else {
+            raw_input
         };
 
         if payload.len() < 8 {

@@ -13,7 +13,16 @@ name = "toseven_pack"
 path = "src/bin/toseven_pack.rs"
 required-features = ["std"]
 
+[[bin]]
+name = "dm01_firmware"
+path = "src/bin/firmware.rs"
+test = false
+bench = false
+required-features = ["embedded"]
+
 [features]
 default = ["std"]
 std = []
+embedded = []
+
 

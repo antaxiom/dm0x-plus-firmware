@@ -25,6 +25,7 @@ pub mod eeprom;
 pub mod faults;
 pub mod foc;
 pub mod hal;
+pub mod pac;
 pub mod pack;
 pub mod power_curve;
 pub mod protocol;
