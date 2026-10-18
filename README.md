@@ -62,7 +62,7 @@ This project is a **100% clean-room reimplementation** written in memory-safe, m
 ### AI Ethics & Engineering Disclosure
 This codebase was developed with the assistance of advanced generative AI models, specifically **Google Gemini** (via Antigravity) and **Anthropic Claude**:
 - **Technical Role:** AI models were utilized as augmentative technical pair-programmers and analytical assistants to assist in reverse-engineering obfuscated ARM machine code, cross-referencing peripheral register maps against microcontrollers, translating decompiled math into safe Rust algorithms, and developing comprehensive simulation suites.
-- **Human Verification & Determinism:** Every algorithm, transform, register definition, and communication frame has been human-reviewed and verified against bit-exact roundtrips, cryptographic digests, and deterministic physical simulations.
+- **Automated Verification & Determinism:** The codebase relies on extensive automated regression tests, bit-exact roundtrips, cryptographic digests, and deterministic physical simulations to validate algorithms and data structures. However, it has not undergone an exhaustive line-by-line manual human audit of all decompiled routines; community testing, peer review, and bench validation remain essential steps.
 - **Ethical Purpose & Interoperability:** This work is conducted strictly for interoperability, research, safety improvements, and consumer right-to-repair. The project aims to eliminate artificial software lockouts, correct safety deficiencies, and provide riders with full control over the hardware they legitimately own.
 
 ---

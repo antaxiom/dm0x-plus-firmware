@@ -140,9 +140,18 @@ cargo test --manifest-path dm01-firmware/Cargo.toml --test simulation_suite -- -
 # List connected USB serial adapters
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 
-# Launch DM+ Firmware Studio Desktop GUI (Slint)
-cargo run --manifest-path dm-plus-gui/Cargo.toml
-
 # Package local host release artifacts (CLI & GUI) into dist/
 ./scripts/package-release.sh
 ```
+
+---
+
+## Documentation & `README.md` Maintenance Policy
+To prevent `README.md` from falling behind or drifting out of sync with code and community discussions, all agents must adhere to the following rules:
+
+1. **Brand Identity:** Always refer to the overall open project as **DM+** (e.g., *DM+ Firmware & Tooling Studio*), noting that naming may evolve as support broadens.
+2. **Current Implementation First:** Keep the "What Is Implemented Right Now" section up to date with actual working features. Long-term goals belong in the foldable "Project Vision & Future Roadmap" section.
+3. **Foldable Structure:** Use HTML `<details><summary>` blocks for large tables, register maps, and extensive CLI references to preserve clean scannability.
+4. **No Emojis & No ASCII Interface Maps:** Keep `README.md` clean and professional; do not re-introduce decorative emojis or fragile ASCII UI drawings.
+5. **AI Ethics & Accuracy:** Never claim comprehensive manual human line-by-line review of decompiled code. Clearly state the use of AI assistance (Gemini / Claude) along with automated tests, bit-exact roundtrips, and simulation verification, emphasizing the need for community bench testing.
+6. **Community Inquiries:** When addressing community feedback (such as torque sensor span calculation, nylon primary reduction gear protection, or battery LVC true 0A cutoff), keep the technical rationale in the "Community Inquiries & Technical Feedback" section aligned with ongoing developments.
