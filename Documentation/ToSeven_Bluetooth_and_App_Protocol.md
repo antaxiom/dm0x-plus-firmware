@@ -146,3 +146,4 @@ The Android app embeds a complete OTA bootloader client (`cn.minshine.ebike.Firm
 2. **Chunk Pacing:** Slices `.Pack` payload into 16-byte chunks streamed over BLE characteristic `0000FFF1`.
 3. **Sector Verification:** Pauses every 1024 bytes (1 sector) for Flash write and CRC confirmation.
 4. **Completion:** Issues reboot command upon complete Flash write.
+
