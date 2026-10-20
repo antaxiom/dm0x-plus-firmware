@@ -65,8 +65,8 @@ pub const fn sin_q15(angle: u16) -> i16 {
 /// into 2-axis stationary frame `(alpha, beta)`.
 pub const fn clarke_transform(currents: PhaseCurrents) -> AlphaBeta {
     let alpha = currents.i_a_ma;
-    let num = currents.i_a_ma + 2 * currents.i_b_ma;
-    let beta = ((num as i64 * 18919) >> 15) as i32;
+    let num = currents.i_a_ma as i64 + 2 * (currents.i_b_ma as i64);
+    let beta = ((num * 18919) >> 15) as i32;
     AlphaBeta { alpha, beta }
 }
 

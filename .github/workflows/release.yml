@@ -185,7 +185,19 @@ jobs:
         run: |
           mkdir -p stage
           cp target/${{ matrix.target }}/release/dm-plus-gui stage/
+          cp dm-plus-gui/assets/logo.png stage/
+          cp dm-plus-gui/assets/logo.svg stage/
           cp README.md stage/
+          cat << 'EOF' > stage/dm-plus-gui.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=DM+ Firmware Studio
+          Comment=ToSeven Mid-Drive Motor Tuning & Display Patching Tool
+          Exec=dm-plus-gui
+          Icon=logo
+          Terminal=false
+          Categories=Utility;HardwareSettings;
+          EOF
           tar -czf "${{ matrix.archive }}" -C stage .
 
       # Package macOS App Bundle into zip
@@ -196,6 +208,7 @@ jobs:
           mkdir -p "$APP_DIR/MacOS"
           mkdir -p "$APP_DIR/Resources"
           cp target/universal/release/dm-plus-gui "$APP_DIR/MacOS/"
+          cp dm-plus-gui/assets/AppIcon.icns "$APP_DIR/Resources/"
           
           # Create Info.plist
           cat << 'EOF' > "$APP_DIR/Info.plist"
@@ -205,6 +218,8 @@ jobs:
           <dict>
               <key>CFBundleExecutable</key>
               <string>dm-plus-gui</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
               <key>CFBundleIdentifier</key>
               <string>org.toseven.dmplus</string>
               <key>CFBundleName</key>
@@ -232,6 +247,8 @@ jobs:
           $bin = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
           New-Item -ItemType Directory -Force -Path stage
           Copy-Item $bin stage/
+          Copy-Item dm-plus-gui/assets/logo.ico stage/
+          Copy-Item dm-plus-gui/assets/logo.png stage/
           Copy-Item README.md stage/
           Compress-Archive -Path stage/* -DestinationPath "${{ matrix.archive }}"
 

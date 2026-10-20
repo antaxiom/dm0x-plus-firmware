@@ -479,9 +479,9 @@ impl MotorConfig {
     /// Estimates vehicle speed in 0.1 km/h units from crank cadence using the midpoint gear ratio
     /// and configured wheel circumference in mm.
     pub fn estimate_speed_deci_kph(&self, cadence_rpm: u16) -> u16 {
-        let circ_mm = (self.wheel_circumference_mm as u32).max(1000);
-        let ratio_q8 = self.midpoint_gear_ratio_q8() as u32;
-        let num = (cadence_rpm as u32) * ratio_q8 * circ_mm * 3;
+        let circ_mm = (self.wheel_circumference_mm as u64).max(1000);
+        let ratio_q8 = self.midpoint_gear_ratio_q8() as u64;
+        let num = (cadence_rpm as u64) * ratio_q8 * circ_mm * 3;
         ((num + 640_000) / 1_280_000) as u16
     }
 

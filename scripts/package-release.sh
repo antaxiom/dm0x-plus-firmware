@@ -52,6 +52,7 @@ if [ "${OS}" = "Darwin" ]; then
     mkdir -p "${APP_DIR}/MacOS"
     mkdir -p "${APP_DIR}/Resources"
     cp "${GUI_BIN}" "${APP_DIR}/MacOS/"
+    cp "${REPO_ROOT}/dm-plus-gui/assets/AppIcon.icns" "${APP_DIR}/Resources/AppIcon.icns"
     
     cat << 'EOF' > "${APP_DIR}/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,6 +61,8 @@ if [ "${OS}" = "Darwin" ]; then
 <dict>
     <key>CFBundleExecutable</key>
     <string>dm-plus-gui</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>org.toseven.dmplus</string>
     <key>CFBundleName</key>
@@ -95,7 +98,19 @@ elif [ "${OS}" = "Linux" ]; then
     GUI_ARCHIVE="${DIST_DIR}/dm-plus-gui-linux-${ARCH}.tar.gz"
     mkdir -p "${STAGE_DIR}/gui"
     cp "${GUI_BIN}" "${STAGE_DIR}/gui/"
+    cp "${REPO_ROOT}/dm-plus-gui/assets/logo.png" "${STAGE_DIR}/gui/"
+    cp "${REPO_ROOT}/dm-plus-gui/assets/logo.svg" "${STAGE_DIR}/gui/"
     cp "${REPO_ROOT}/README.md" "${STAGE_DIR}/gui/"
+    cat << 'EOF' > "${STAGE_DIR}/gui/dm-plus-gui.desktop"
+[Desktop Entry]
+Type=Application
+Name=DM+ Firmware Studio
+Comment=ToSeven Mid-Drive Motor Tuning & Display Patching Tool
+Exec=dm-plus-gui
+Icon=logo
+Terminal=false
+Categories=Utility;HardwareSettings;
+EOF
     tar -czf "${GUI_ARCHIVE}" -C "${STAGE_DIR}/gui" .
     echo "✓ Packaged GUI: ${GUI_ARCHIVE}"
 

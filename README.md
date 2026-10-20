@@ -27,7 +27,7 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.6` - Hotfix Beta Release)
+## What Is Implemented Right Now (`v0.3.0-beta.7` - Release Beta)
 
 Rather than relying on future promises, here is the verified functionality available today in this repository:
 
@@ -41,6 +41,10 @@ Rather than relying on future promises, here is the verified functionality avail
    - Balanced 2-column card geometry across both Motor Controller and Display tabs, eliminating empty whitespace padding and aligning the Flashing window dimensions and button styling identically across both views.
    - Dedicated "Save Patched .hex..." export button in the Display Patcher card to generate and save unlocked Intel HEX firmware offline without requiring serial hardware.
    - Synchronized ISP and Motor Flashing windows with uniform port selectors, dynamic 1200 ms background auto-refresh on device plug/unplug, manual "Refresh" trigger buttons, clear progress feedback, and non-blocking asynchronous serial engine with connection timeouts.
+   - Rigid Adwaita-style segmented view switcher with mathematically locked tab widths (`min-width: 200px; max-width: 200px;` inside a `410px` pill container), completely eliminating horizontal jitter, text clipping, and tab resizing when toggling between regular and semibold font weights.
+   - Clean professional header layout, with redundant branding logos removed from beside the title text to maintain a crisp, native titlebar appearance.
+   - Official DM+ branding assets across all supported operating systems: Apple HIG-standard squircle icon (`AppIcon.icns`, `logo.ico`, `logo.png`, `logo.svg`, and Linux `.desktop`) featuring an $824 \times 824$ squircle centered on a $1024 \times 1024$ canvas, $185\text{px}$ corner radius, and subtle multi-layer drop shadows.
+   - Dynamic macOS Dock icon integration: unbundled applications running via `cargo run` automatically paint the application dock icon and update `dockTile.setContentView:` with the squircle logo.
    - Native Windows subsystem configuration (`#![windows_subsystem = "windows"]`), completely eliminating unwanted background command prompt/terminal windows when launching `dm-plus-gui.exe`.
    - Comprehensive multi-tier Windows COM port discovery combining `QueryDosDeviceW`, registry `SERIALCOMM` enumeration with 64-bit handle sign extension, and direct `CreateFileW` probing fallback across `COM1..COM32` (detecting restricted or active virtual USB serial adapters via `ERROR_ACCESS_DENIED` and `ERROR_SHARING_VIOLATION`).
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).

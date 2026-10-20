@@ -100,9 +100,12 @@ impl CadenceScaling {
                 } else if cadence_rpm >= *target_rpm {
                     256
                 } else {
-                    let span = (*target_rpm - *ramp_start_rpm) as u32;
+                    let span = target_rpm.saturating_sub(*ramp_start_rpm) as u32;
                     let delta = (cadence_rpm - *ramp_start_rpm) as u32;
-                    ((delta * 256) / span) as u16
+                    match (delta * 256).checked_div(span) {
+                        Some(v) => v as u16,
+                        None => 256,
+                    }
                 }
             }
         }

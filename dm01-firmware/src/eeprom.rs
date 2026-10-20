@@ -339,9 +339,9 @@ impl EepromImage {
     pub fn estimate_speed_deci_kph(&self, cadence_rpm: u16) -> u16 {
         let inches = self.wheel_diameter_inches();
         let eff_inches = if inches == 0 { 26 } else { inches };
-        let circ_mm = (eff_inches as u32 * 798) / 10;
-        let ratio_q8 = self.midpoint_gear_ratio_q8() as u32;
-        let num = (cadence_rpm as u32) * ratio_q8 * circ_mm * 3;
+        let circ_mm = (eff_inches as u64 * 798) / 10;
+        let ratio_q8 = self.midpoint_gear_ratio_q8() as u64;
+        let num = (cadence_rpm as u64) * ratio_q8 * circ_mm * 3;
         ((num + 640_000) / 1_280_000) as u16
     }
 }

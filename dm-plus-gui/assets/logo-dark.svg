@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgGradientDark" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2A2A2E"/>
+      <stop offset="100%" stop-color="#161618"/>
+    </linearGradient>
+    <filter id="appleShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.35" />
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.25" />
+    </filter>
+  </defs>
+  <!-- Apple HIG 824x824 Icon Body with native shadow -->
+  <rect x="100" y="96" width="824" height="824" rx="185" ry="185" fill="#161618" filter="url(#appleShadow)"/>
+  <rect x="100" y="96" width="824" height="824" rx="185" ry="185" fill="url(#bgGradientDark)" stroke="rgba(255, 255, 255, 0.12)" stroke-width="2"/>
+  <!-- "DM" Compound Glyph (Electric Cyan) -->
+  <path fill="#48D4DC" fill-rule="evenodd" d="M 273.850 670.564 C 297.258 670.564 321.533 668.392 341.473 655.388 C 363.586 641.519 373.552 617.677 373.988 585.162 L 373.988 440.809 C 373.988 409.597 369.218 377.951 339.742 360.612 C 315.032 346.304 281.654 345.436 253.909 345.436 L 171.110 345.436 L 171.110 670.564 Z M 247.405 403.960 C 284.689 404.828 297.258 406.995 297.693 445.142 L 297.693 551.348 C 298.993 594.701 298.556 615.509 247.405 612.040 Z M 485.830 670.564 L 478.895 415.666 L 479.762 415.666 L 532.214 670.564 L 589.003 670.564 L 642.757 415.666 L 643.625 415.666 L 635.821 670.564 L 708.650 670.564 L 708.650 345.436 L 602.008 345.436 L 561.258 537.476 L 560.391 537.476 L 520.944 345.436 L 413.434 345.436 L 413.434 670.564 Z"/>
+  <!-- "+" Superscript Glyph (Apple Vibrant Red) -->
+  <path fill="#FF453A" d="M 809.499 437.640 L 809.499 481.244 L 781.772 481.244 L 781.772 437.640 L 738.377 437.640 L 738.377 410.121 L 781.772 410.121 L 781.772 366.731 L 809.499 366.731 L 809.499 410.121 L 852.890 410.121 L 852.890 437.640 Z"/>
+</svg>

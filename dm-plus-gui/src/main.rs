@@ -149,8 +149,113 @@ fn do_inspect_display_hex(ui: &MainWindow, path_str: &str) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use std::ffi::{c_char, c_void};
+
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+        fn objc_autoreleasePoolPush() -> *mut c_void;
+        fn objc_autoreleasePoolPop(pool: *mut c_void);
+    }
+
+    const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+
+    unsafe {
+        let pool = objc_autoreleasePoolPush();
+
+        let ns_app_class = objc_getClass(c"NSApplication".as_ptr());
+        let shared_app_sel = sel_registerName(c"sharedApplication".as_ptr());
+        let msg_send_no_arg: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        let app = msg_send_no_arg(ns_app_class, shared_app_sel);
+
+        if !app.is_null() {
+            // Ensure activation policy is regular GUI application
+            let set_policy_sel = sel_registerName(c"setActivationPolicy:".as_ptr());
+            let msg_send_set_policy: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) -> bool =
+                std::mem::transmute(objc_msgSend as *const ());
+            msg_send_set_policy(app, set_policy_sel, 0);
+
+            let ns_data_class = objc_getClass(c"NSData".as_ptr());
+            let data_with_bytes_sel = sel_registerName(c"dataWithBytes:length:".as_ptr());
+            let msg_send_data: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                *const u8,
+                usize,
+            ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+            let data = msg_send_data(
+                ns_data_class,
+                data_with_bytes_sel,
+                LOGO_PNG.as_ptr(),
+                LOGO_PNG.len(),
+            );
+
+            if !data.is_null() {
+                let ns_image_class = objc_getClass(c"NSImage".as_ptr());
+                let alloc_sel = sel_registerName(c"alloc".as_ptr());
+                let init_with_data_sel = sel_registerName(c"initWithData:".as_ptr());
+
+                let image_alloc = msg_send_no_arg(ns_image_class, alloc_sel);
+                let msg_send_init: unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    *mut c_void,
+                ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+                let image = msg_send_init(image_alloc, init_with_data_sel, data);
+
+                if !image.is_null() {
+                    let set_icon_sel = sel_registerName(c"setApplicationIconImage:".as_ptr());
+                    msg_send_init(app, set_icon_sel, image);
+
+                    // Set dockTile.contentView to an NSImageView with the logo
+                    let ns_image_view_class = objc_getClass(c"NSImageView".as_ptr());
+                    let view_alloc = msg_send_no_arg(ns_image_view_class, alloc_sel);
+                    let init_sel = sel_registerName(c"init".as_ptr());
+                    let view = msg_send_no_arg(view_alloc, init_sel);
+                    let set_image_sel = sel_registerName(c"setImage:".as_ptr());
+                    msg_send_init(view, set_image_sel, image);
+
+                    let dock_tile_sel = sel_registerName(c"dockTile".as_ptr());
+                    let dock_tile = msg_send_no_arg(app, dock_tile_sel);
+                    if !dock_tile.is_null() {
+                        let set_content_view_sel = sel_registerName(c"setContentView:".as_ptr());
+                        msg_send_init(dock_tile, set_content_view_sel, view);
+
+                        let display_sel = sel_registerName(c"display".as_ptr());
+                        let msg_send_void: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+                            std::mem::transmute(objc_msgSend as *const ());
+                        msg_send_void(dock_tile, display_sel);
+                    }
+                }
+            }
+        }
+
+        objc_autoreleasePoolPop(pool);
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    #[cfg(target_os = "macos")]
+    set_macos_dock_icon();
+
     let main_window = MainWindow::new()?;
+
+    #[cfg(target_os = "macos")]
+    let _dock_timer = {
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(100),
+            || {
+                set_macos_dock_icon();
+            },
+        );
+        timer
+    };
 
     // Initialize available serial ports
     update_ports_in_ui(&main_window);
@@ -235,81 +340,6 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(ui) = handle_weak.upgrade() {
                 ui.set_display_hex_path(SharedString::from(path_str.clone()));
                 do_inspect_display_hex(&ui, &path_str);
-            }
-        }
-    });
-
-    // Callback: Export/Save Patched Display HEX directly to disk
-    let handle_weak = main_window.as_weak();
-    main_window.on_export_patched_display_hex(move |hex_path| {
-        if let Some(ui) = handle_weak.upgrade() {
-            let path_str = hex_path.as_str().trim().to_string();
-            if path_str.is_empty() {
-                ui.set_display_status(SharedString::from(
-                    "Please choose a display HEX file first.",
-                ));
-                return;
-            }
-
-            let raw = match fs::read_to_string(&path_str) {
-                Ok(s) => s,
-                Err(e) => {
-                    ui.set_display_status(SharedString::from(format!(
-                        "Cannot read input file: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-
-            let mut hex_file = match IntelHexFile::parse(&raw) {
-                Ok(h) => h,
-                Err(e) => {
-                    ui.set_display_status(SharedString::from(format!(
-                        "Failed to parse Intel HEX: {:?}",
-                        e
-                    )));
-                    return;
-                }
-            };
-
-            let default_name = std::path::Path::new(&path_str)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| format!("{}-Unlocked.hex", s))
-                .unwrap_or_else(|| "Display-Unlocked.hex".to_string());
-
-            if let Some(save_path) = rfd::FileDialog::new()
-                .add_filter("Intel HEX Firmware (*.hex)", &["hex", "HEX"])
-                .set_file_name(&default_name)
-                .save_file()
-            {
-                match patch_display(&mut hex_file) {
-                    Ok(patches) => {
-                        let count = patches.len();
-                        let encoded = hex_file.to_hex_string();
-                        let save_str = save_path.to_string_lossy().to_string();
-                        if let Err(e) = fs::write(&save_str, encoded) {
-                            ui.set_display_status(SharedString::from(format!(
-                                "Failed to write file: {}",
-                                e
-                            )));
-                            return;
-                        }
-                        ui.set_display_status(SharedString::from(format!(
-                            "Neutralized {} lockout gates. Saved to '{}'",
-                            count, save_str
-                        )));
-                        ui.set_display_is_locked(false);
-                        ui.set_display_lockout_status(SharedString::from("UNLOCKED (Patched)"));
-                    }
-                    Err(e) => {
-                        ui.set_display_status(SharedString::from(format!(
-                            "Patching failed: {:?}",
-                            e
-                        )));
-                    }
-                }
             }
         }
     });
