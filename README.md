@@ -334,6 +334,7 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 ├── Documentation/
 │   ├── Firmware_Flashing_and_Recovery_Guide.md # Step-by-step flashing & unbricking recovery runbook
 │   ├── Bench_Testing_Bringup_Guide.md # Hardware bring-up runbook, Julet pinouts, bench setup
+│   ├── ToSeven_Controller_Depotting_and_Diagnostics_Guide.md # Thermal depotting, polyurethane release & board triage
 │   ├── ToSeven_IAP_Flashing_Protocol.md # Clean-room IAP UART and display ISP flashing spec
 │   ├── ToSeven_Display_Firmware_Architecture.md # Display architecture, throttle modes, lockout bypass
 │   ├── DM01_Hardware_Specification.md # Complete reverse-engineered register map and pinout
