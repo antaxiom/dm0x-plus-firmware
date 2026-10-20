@@ -136,13 +136,14 @@ impl ThreePhasePwm for Dm01PwmHardware {
 use crate::pac::ADC1_BASE;
 
 /// Static memory buffer populated continuously by DMA1 Channel 1 circular conversions.
-/// - `[0]`: ADC1 Channel 4 (PA4) — Torque Sensor strain gauge
-/// - `[1]`: ADC1 Channel 7 (PA7) — Throttle Hall sensor
-/// - `[2]`: ADC1 Channel 8 (PB0) — Battery voltage divider
-/// - `[3]`: ADC1 Channel 9 (PB1) — NTC thermistor temperature
-pub static mut DMA_ADC_CHANNELS: [u16; 4] = [0; 4];
+/// - `[0]`: ADC1 Channel 1 (PA1) — DC Rail / Bus Current monitor
+/// - `[1]`: ADC1 Channel 4 (PA4) — Torque Sensor strain gauge
+/// - `[2]`: ADC1 Channel 7 (PA7) — Throttle Hall sensor
+/// - `[3]`: ADC1 Channel 8 (PB0) — Battery voltage divider
+/// - `[4]`: ADC1 Channel 9 (PB1) — NTC thermistor temperature
+pub static mut DMA_ADC_CHANNELS: [u16; 5] = [0; 5];
 
-/// Concrete `MotorSensorsHal` reading DM01 physical Hall sensors, dual injected shunts, and DMA-scanned ADCs.
+/// Concrete `MotorSensorsHal` reading DM01/DM02 physical Hall sensors, dual injected shunts, and DMA-scanned ADCs.
 pub struct Dm01SensorsHardware {
     pub shunt_offset_u: u16,
     pub shunt_offset_v: u16,
@@ -160,9 +161,16 @@ impl Dm01SensorsHardware {
     pub fn init_hardware(&mut self) {
         // 1. Enable peripheral clocks via RCC
         let rcc = HardwarePeripherals::rcc();
-        // APB2ENR: AFIO (bit 0), GPIOA (bit 2), GPIOB (bit 3), GPIOC (bit 4), ADC1 (bit 9), ADC2 (bit 10), TIM1 (bit 11)
+        // APB2ENR: AFIO (bit 0), GPIOA (bit 2), GPIOB (bit 3), GPIOC (bit 4), GPIOD (bit 5), ADC1 (bit 9), ADC2 (bit 10), TIM1 (bit 11)
         rcc.apb2enr.modify(|v| {
-            v | (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 9) | (1 << 10) | (1 << 11)
+            v | (1 << 0)
+                | (1 << 2)
+                | (1 << 3)
+                | (1 << 4)
+                | (1 << 5)
+                | (1 << 9)
+                | (1 << 10)
+                | (1 << 11)
         });
         // AHBENR: DMA1 (bit 0)
         rcc.ahbenr.modify(|v| v | (1 << 0));
@@ -171,36 +179,47 @@ impl Dm01SensorsHardware {
 
         // 2. Configure GPIO pins
         // GPIOA:
-        // PA0 (Shunt U), PA1 (Shunt V / Bus), PA4 (Torque), PA7 (Throttle): Analog input (0x0)
+        // PA1 (Bus Current), PA4 (Torque), PA5 (Phase B), PA6 (Phase A), PA7 (Throttle): Analog input (0x0)
         // PA8, PA9, PA10: TIM1_CH1, CH2, CH3 AF Push-Pull 50MHz (0xB)
+        // PA15: Speed Sensor Input with Pull-Up (0x8)
         let gpioa = HardwarePeripherals::gpioa();
-        gpioa.crl.write(0x4404_4000);
-        gpioa.crh.write(0x4444_4BBB);
+        gpioa.crl.write(0x0000_4044); // PA1, PA4, PA5, PA6, PA7 analog (0x0)
+        gpioa.crh.write(0x8444_4BBB); // PA8..10 AF-PP (0xB), PA15 Input-PU (0x8)
+        gpioa.odr.modify(|v| v | (1 << 15)); // PA15 pull-up
 
         // GPIOB:
         // PB0 (Vbat), PB1 (Temp): Analog input (0x0)
+        // PB2 (Brake Switch): Input with Pull-Up (0x8)
+        // PB6, PB7, PB8 (Hall A, B, C): Input with Pull-Up (0x8)
         // PB10 (USART3_TX): AF-PP 50MHz (0xB)
         // PB11 (USART3_RX): Input with Pull-Up (0x8)
         // PB12 (TIM1_BKIN Break Input): Input with Pull-Up (0x8)
         // PB13, PB14, PB15 (TIM1_CH1N, CH2N, CH3N): AF-PP 50MHz (0xB)
         let gpiob = HardwarePeripherals::gpiob();
-        gpiob.crl.write(0x4444_4400);
-        gpiob.crh.write(0xBBB8_8B44);
-        gpiob.odr.modify(|v| v | (1 << 11) | (1 << 12));
+        gpiob.crl.write(0x8844_4800); // PB0, PB1 analog (0x0), PB2 pull-up (0x8), PB6, PB7 pull-up (0x8)
+        gpiob.crh.write(0xBBB8_8B48); // PB8 pull-up (0x8), PB10 AF-PP (0xB), PB11 pull-up (0x8), PB12 pull-up (0x8), PB13..15 AF-PP (0xB)
+        gpiob
+            .odr
+            .modify(|v| v | (1 << 2) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 11) | (1 << 12));
 
         // GPIOC:
-        // PC6, PC7, PC8 (Hall U, V, W): Input with Pull-Up (0x8)
+        // PC13 (PAS1 Cadence Quadrature): Input with Pull-Up (0x8)
         let gpioc = HardwarePeripherals::gpioc();
-        gpioc.crl.write(0x8844_4444);
-        gpioc.crh.write(0x4444_4448);
-        gpioc.odr.modify(|v| v | (0b111 << 6));
+        gpioc.crh.modify(|v| (v & !(0xF << 20)) | (0x8 << 20));
+        gpioc.odr.modify(|v| v | (1 << 13));
+
+        // GPIOD:
+        // PD0 (PAS2 Cadence Quadrature): Input with Pull-Up (0x8)
+        let gpiod = HardwarePeripherals::gpiod();
+        gpiod.crl.modify(|v| (v & !0xF) | 0x8);
+        gpiod.odr.modify(|v| v | 1);
 
         // 3. Configure DMA1 Channel 1 for ADC1 Regular Scan
         let dma1 = HardwarePeripherals::dma1();
         dma1.ch1.ccr.write(0); // Disable during configuration
         dma1.ch1.cpar.write((ADC1_BASE + 0x4C) as u32); // ADC1 DR register
         dma1.ch1.cmar.write((&raw const DMA_ADC_CHANNELS) as u32);
-        dma1.ch1.cndtr.write(4); // 4 channels transferred per cycle
+        dma1.ch1.cndtr.write(5); // 5 channels transferred per cycle
                                  // CCR: MINC (bit 7), CIRC (bit 5), PSIZE=01 (16-bit, bit 8), MSIZE=01 (16-bit, bit 10), PL=10 (high, bits 12:13), EN (bit 0)
         dma1.ch1.ccr.write(0x2DA1);
 
@@ -226,11 +245,11 @@ impl Dm01SensorsHardware {
         adc2.cr2.modify(|v| v | (1 << 2));
         while (adc2.cr2.read() & (1 << 2)) != 0 {}
 
-        // Injected channels for phase current shunts:
-        // ADC1 Injected: Channel 0 (PA0 Phase A shunt)
-        // ADC2 Injected: Channel 1 (PA1 Phase B shunt)
-        adc1.jsqr.write(0 << 15);
-        adc2.jsqr.write(1 << 15);
+        // Injected channels for phase current shunts (matching V6510C at 0x080099EC / 0x08009ABC):
+        // ADC1 Injected Rank 1: Channel 6 (PA6 Phase A shunt)
+        // ADC2 Injected Rank 2: Channel 5 (PA5 Phase B shunt)
+        adc1.jsqr.write(6 << 15);
+        adc2.jsqr.write(5 << 15);
 
         // Dual mode: DUALMOD = 0b0011 (Regular simultaneous + injected simultaneous mode)
         // SCAN = 1 (bit 8)
@@ -242,10 +261,12 @@ impl Dm01SensorsHardware {
         adc1.cr2.modify(|v| v | (1 << 15) | (1 << 8) | (1 << 1));
         adc2.cr2.modify(|v| v | (1 << 15));
 
-        // ADC1 Regular Sequence: 4 conversions (SQR1.L = 3)
-        // 1st = Ch 4 (Torque), 2nd = Ch 7 (Throttle), 3rd = Ch 8 (Vbat), 4th = Ch 9 (Temp)
-        adc1.sqr1.write(3 << 20);
-        adc1.sqr3.write(4 | (7 << 5) | (8 << 10) | (9 << 15));
+        // ADC1 Regular Sequence: 5 conversions (SQR1.L = 4)
+        // 1st = Ch 1 (Bus Current PA1), 2nd = Ch 4 (Torque PA4), 3rd = Ch 7 (Throttle PA7),
+        // 4th = Ch 8 (Vbat PB0), 5th = Ch 9 (Temp PB1)
+        adc1.sqr1.write(4 << 20);
+        adc1.sqr3
+            .write(1 | (4 << 5) | (7 << 10) | (8 << 15) | (9 << 20));
 
         // Start continuous regular conversions (SWSTART = bit 22)
         adc1.cr2.modify(|v| v | (1 << 22));
@@ -335,20 +356,21 @@ impl MotorSensorsHal for Dm01SensorsHardware {
 
     #[inline(always)]
     fn read_hall_bits(&mut self) -> u8 {
-        let gpioc = HardwarePeripherals::gpioc();
-        // Hall inputs are on PC6, PC7, PC8
-        let idr = gpioc.idr.read();
+        let gpiob = HardwarePeripherals::gpiob();
+        // Hall inputs are on PB6, PB7, PB8 (matching V6510C at 0x08007FE8 and AT32F413 hardware pinout)
+        let idr = gpiob.idr.read();
         ((idr >> 6) & 0x07) as u8
     }
 
     /// Reads slow-loop analog and digital sensors from continuous hardware DMA conversions.
     fn sample_control_inputs(&mut self) -> SensorInputs {
-        let (raw_trq, raw_thr, raw_vbat, raw_temp) = unsafe {
+        let (_raw_ibus, raw_trq, raw_thr, raw_vbat, raw_temp) = unsafe {
             (
                 DMA_ADC_CHANNELS[0],
                 DMA_ADC_CHANNELS[1],
                 DMA_ADC_CHANNELS[2],
                 DMA_ADC_CHANNELS[3],
+                DMA_ADC_CHANNELS[4],
             )
         };
 
@@ -384,8 +406,9 @@ impl MotorSensorsHal for Dm01SensorsHardware {
             25 + ((2048 - raw_temp as i32) / 20) as i16
         };
 
-        // Physical brake switch: PB12 (active low when brake lever grounds BKIN)
-        let brake_active = (HardwarePeripherals::gpiob().idr.read() & (1 << 12)) == 0;
+        // Brake sensors: PB2 (dedicated active-low brake lever switch) or PB12 (TIM1_BKIN trip)
+        let idr_b = HardwarePeripherals::gpiob().idr.read();
+        let brake_active = (idr_b & (1 << 2)) == 0 || (idr_b & (1 << 12)) == 0;
 
         SensorInputs {
             battery_voltage_mv,

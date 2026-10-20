@@ -7,7 +7,7 @@ This document provides the definitive, reverse-engineered hardware architecture 
 ## 1. Microcontroller Architecture & Memory Map
 
 - **Core:** ARM Cortex-M4F with hardware single-precision Floating-Point Unit (FPU).
-- **Silicon Family:** GigaDevice GD32F303 / STMicroelectronics STM32F303 / STM32F103 compatible.
+- **Silicon Family:** Artery AT32F413 (e.g. `AT32F413CBT7` LQFP48 on DM02) / GigaDevice GD32F303 / STMicroelectronics STM32F303 / STM32F103 compatible.
 - **Clock Configuration (`SystemInit` at `0x08007D0C`):**
   - System Core Clock: $72\text{ MHz}$ (or $108\text{ MHz}$ on GD32).
   - Coprocessor CP10/CP11 enabled via `SCB->CPACR` (`0xE000ED88 |= 0x00F00000`).
@@ -49,16 +49,16 @@ Dual synchronized ADCs operate in injected + regular scan mode:
 
 ### A. Injected Channels (Phase Shunt Currents — Synchronized to PWM Midpoint):
 - **Trigger:** Synchronized to `TIM1` center-aligned update event (when all low-side MOSFETs are ON).
-- **ADC Channels:** Dual Injected reads on `PA0` (Phase A Shunt) and `PA1` (Phase B Shunt), with Phase C derived via Kirchhoff's Current Law: $I_c = -(I_a + I_b)$.
+- **ADC Channels:** Dual Injected reads on `PA6` (Phase A Shunt, Rank 1) and `PA5` (Phase B Shunt, Rank 2), with Phase C derived via Kirchhoff's Current Law: $I_c = -(I_a + I_b)$. Verified at `0x080099EC` (DM01) and `0x08009ABC` (DM02).
 
 ### B. Regular Channels (Analog Inputs):
 | ADC Channel | MCU Pin | Signal Source | Description | Voltage Range |
 | :--- | :--- | :--- | :--- | :--- |
-| **Channel 1** | `PA1` | Current Shunt / Bus | Total battery current monitor | $0..3.3\text{ V}$ |
-| **Channel 4** | `PA4` | **Torque Strain Gauge** | Analog pedal force signal | $400..3000\text{ mV}$ (resting zero $\sim 750\text{ mV}$) |
-| **Channel 7** | `PA7` | **Throttle Signal** | Hall-effect thumb / twist throttle | $800..3500\text{ mV}$ (deadband cutoff below $1000\text{ mV}$) |
-| **Channel 8** | `PB0` | **Battery Voltage** | Resistor voltage divider | Scaled for $36\text{ V}..52\text{ V}$ packs (up to $60.0\text{ V}$) |
-| **Channel 9** | `PB1` | **Controller / Motor Temp** | NTC Thermistor divider | $10\text{ k}\Omega$ NTC, rollback starts at $70^\circ\text{C}$ |
+| **Channel 1** | `PA1` | **DC Rail / Bus Current** | Total DC bus current monitor (Rank 1) | $0..3.3\text{ V}$ |
+| **Channel 4** | `PA4` | **Torque Strain Gauge** | Analog pedal force signal (Rank 2) | $400..3000\text{ mV}$ (resting zero $\sim 750\text{ mV}$) |
+| **Channel 7** | `PA7` | **Throttle Signal** | Hall-effect thumb / twist throttle (Rank 3) | $800..3500\text{ mV}$ (deadband cutoff below $1000\text{ mV}$) |
+| **Channel 8** | `PB0` | **Battery Voltage** | Resistor voltage divider (Rank 4) | Scaled for $36\text{ V}..52\text{ V}$ packs (up to $60.0\text{ V}$) |
+| **Channel 9** | `PB1` | **Controller / Motor Temp** | NTC Thermistor divider (Rank 5) | $10\text{ k}\Omega$ NTC, rollback starts at $70^\circ\text{C}$ |
 
 ---
 
@@ -77,12 +77,16 @@ The handlebar display communicates over a half-duplex / full-duplex UART bus usi
 
 ---
 
-## 5. Hall Sensors & Cadence Observer (`TIM4` at `0x40000800` & `GPIOC`)
+## 5. Hall Sensors & Cadence Observer (`TIM4` at `0x40000800` & `GPIOB`)
 
-- **Hall Sensor Inputs:** 3 digital inputs with $10\text{ k}\Omega$ pull-ups:
-  - `PC6` (Hall U), `PC7` (Hall V), `PC8` (Hall W)
-- **Angle Tracking:** Handled by `TIM4_IRQHandler` (Vector 46) and `HallPllObserver` in `src/foc.rs`.
-- **Interpolation:** Tracks the elapsed time between sector state transitions (`0b001..=0b110`) and advances the estimated rotor electrical angle ($\theta_e$) in $60^\circ$ increments using a Phase-Locked Loop (PLL).
+- **Hall Sensor Inputs:** 3 digital inputs with internal pull-ups on Port B:
+  - `PB6` (Hall A / TIM4_CH1)
+  - `PB7` (Hall B / TIM4_CH2)
+  - `PB8` (Hall C / TIM4_CH3)
+  - Verified in physical hardware mapping and binary disassembly reading `GPIOB->IDR` (`0x40010C08`) at `0x08007FE8` (DM02) and `0x08007F78` (DM01).
+- **Speed Sensor Input:** `PA15` (TIM2_CH1_ETR / EXTI15)
+- **Cadence Quadrature Inputs:** `PC13` (PAS1) and `PD0` (PAS2)
+- **Brake Switch Input:** `PB2` (dedicated active-low lever switch) alongside `PB12` (`TIM1_BKIN` hardware overcurrent break)
 
 ---
 

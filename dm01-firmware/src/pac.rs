@@ -231,6 +231,11 @@ impl HardwarePeripherals {
     }
 
     #[inline(always)]
+    pub fn gpiod() -> &'static GpioRegisters {
+        unsafe { &*(GPIOD_BASE as *const GpioRegisters) }
+    }
+
+    #[inline(always)]
     pub fn adc1() -> &'static AdcRegisters {
         unsafe { &*(ADC1_BASE as *const AdcRegisters) }
     }
