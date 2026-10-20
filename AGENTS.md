@@ -90,7 +90,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 
 ## Common Build & Verification Commands
 ```bash
-# Run all unit, integration, and simulation tests (72 tests)
+# Run all unit, integration, and simulation tests (75 tests)
 cargo test --manifest-path dm01-firmware/Cargo.toml
 
 # Check strict formatting and clippy lints
@@ -137,6 +137,14 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display
 
 # Live flash display firmware over USB CDC port with on-the-fly unlock
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash /dev/tty.usbmodem110 blobs/displays/t24v/TO7-T24V-Y241225.hex --unlock
+
+# Pre-flight sensor triage checkout (bench safety check)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic /dev/tty.usbserial-110
+
+# Live parameter tuning (SRAM injection without MCU reboot or EEPROM wear)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune --sport 28 --city 18 --eco 10 --speed 32 --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune /dev/tty.usbserial-110 --sport 28 --city 18 --eco 10 --speed 32
 
 # Monitor live 0x69-encrypted UART telemetry (or run simulated ride demo)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor --simulate

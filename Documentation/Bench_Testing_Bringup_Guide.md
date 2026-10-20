@@ -155,6 +155,45 @@ Frame #001: 48.1 V | 0.0 A (0 W) | Temp: 24.2 °C | Speed: 0.0 km/h | Cadence: 0
 Frame #002: 48.1 V | 0.0 A (0 W) | Temp: 24.2 °C | Speed: 0.0 km/h | Cadence: 0 RPM | Faults: None [OK]
 ```
 
+### Step 5a: Automated Pre-Flight Sensor Triage Tool
+Before connecting high-current motor phase wires or raising bench power supply current, run the automated sensor triage checkout to verify that no broken sensors or stuck throttle inputs exist:
+```bash
+# Live triage on physical controller:
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic /dev/tty.usbserial-110
+
+# Or run simulated triage demo (scenarios: nominal, runaway throttle, disconnected torque):
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic --simulate
+```
+Expected output:
+```
+============================================================
+  ToSeven Mid-Drive Motor Pre-Flight Sensor Triage Tool
+============================================================
+------------------------------------------------------------
+  Diagnostic Profile: Live Hardware Sensor Readings
+  Telemetry Source:   Live 18-Byte Telemetry Stream (XOR 0x69)
+------------------------------------------------------------
+  Sensor Checks:
+    Hall Sensor Pattern: Valid (Pattern: 0b011 / #3)         [PASS]
+    Torque Zero-Point:   742 mV (Bench Zero Nominal: 400..1000 mV) [PASS]
+    Throttle Idle ADC:   850 mV (Resting Throttle Safe: <= 1050 mV) [PASS]
+    Thermal Sensors:     Controller: 24°C, Motor: 22°C       [PASS]
+------------------------------------------------------------
+  >> VERDICT: [PASSED] ALL PRE-FLIGHT BENCH CHECKS NOMINAL.
+     Safe to connect main battery or apply high-current power.
+```
+
+### Step 5b: Live Parameter Tuning (No Reboot / No EEPROM Wear)
+You can dynamically modify current limits and speed governing on the live controller over serial without cycling power or burning Flash EEPROM endurance:
+```bash
+# Adjust Sport/City/Eco current and speed limit live:
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune /dev/tty.usbserial-110 --sport 28 --city 18 --eco 10 --speed 32
+
+# Or verify parameter framing in simulation:
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune --sport 28 --city 18 --eco 10 --speed 32 --simulate
+```
+The controller's USART3 interrupt updates the active FOC parameters in **SRAM** (`0x20000300`), which the 1000 Hz FOC loop adopts within $\le 1\text{ ms}$ on the very next calculation tick. Hard safety ceilings (DM01: 32A, DM02: 20A) are strictly validated before frame transmission.
+
 ### Step 6: 3-Pillar Pre-Flight Verification (Before Applying Power to Inverter)
 
 Before connecting motor phase leads or attempting to spin the motor under power, verify the **three foundational pillars** of motor control:

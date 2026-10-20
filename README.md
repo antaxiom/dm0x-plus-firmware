@@ -82,8 +82,10 @@ Here is the verified functionality available in this repository:
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 72 automated unit, integration, and end-to-end physical simulation tests running in CI (63 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 75 automated unit, integration, and end-to-end physical simulation tests running in CI (66 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
+   - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift (400..1000 mV), throttle idle ADC (<= 1050 mV to prevent runaway hazards), and controller/motor thermals prior to applying main battery power.
+   - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller SRAM (`0x20000300`) over standard Julet 5-pin UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash EEPROM wear.
 
 6. **Native Serial Transport & Cross-Platform Parity:**
    - Unified native serial engine operating on macOS, Linux, and Windows without external script dependencies.
@@ -264,6 +266,14 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display
 
 # Flash display firmware over USB CDC port to hardware with on-the-fly unlock
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display flash <port> <firmware.hex> --unlock
+
+# Pre-flight sensor triage for bench testing (evaluates Halls, torque zero, throttle idle, temps)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic <port>
+
+# Live parameter tuning via UART (instant SRAM injection, zero reboot, zero Flash wear)
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune --sport 28 --city 18 --eco 10 --speed 32 --simulate
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune <port> --sport 28 --city 18 --eco 10 --speed 32
 
 # Monitor live 0x69-encrypted UART telemetry (or run simulated ride demo)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor --simulate
