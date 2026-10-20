@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 //! # DM+ Firmware Studio — Slint GUI Application
 //!
 //! Visual desktop studio for configuring, tuning, and flashing ToSeven DM01/DM02 open firmware,
@@ -17,9 +18,9 @@ use std::fs;
 use std::thread;
 use std::time::Duration;
 
-fn query_ports_model() -> (ModelRc<SharedString>, SharedString) {
+fn update_ports_in_ui(ui: &MainWindow) {
     let ports = list_serial_ports();
-    if ports.is_empty() {
+    let (ports_model, initial_port) = if ports.is_empty() {
         let default_str = SharedString::from("No serial devices detected");
         let items = vec![default_str.clone()];
         (ModelRc::new(VecModel::from(items)), default_str)
@@ -30,6 +31,23 @@ fn query_ports_model() -> (ModelRc<SharedString>, SharedString) {
             .collect();
         let first = items[0].clone();
         (ModelRc::new(VecModel::from(items)), first)
+    };
+    ui.set_available_ports(ports_model);
+
+    let cur_motor = ui.get_selected_motor_port();
+    if cur_motor.is_empty()
+        || cur_motor == "No serial devices detected"
+        || !ports.iter().any(|p| p == cur_motor.as_str())
+    {
+        ui.set_selected_motor_port(initial_port.clone());
+    }
+
+    let cur_display = ui.get_selected_display_port();
+    if cur_display.is_empty()
+        || cur_display == "No serial devices detected"
+        || !ports.iter().any(|p| p == cur_display.as_str())
+    {
+        ui.set_selected_display_port(initial_port);
     }
 }
 
@@ -135,47 +153,42 @@ fn main() -> Result<(), slint::PlatformError> {
     let main_window = MainWindow::new()?;
 
     // Initialize available serial ports
-    let (ports_model, initial_port) = query_ports_model();
-    main_window.set_available_ports(ports_model);
-    main_window.set_selected_motor_port(initial_port.clone());
-    main_window.set_selected_display_port(initial_port);
+    update_ports_in_ui(&main_window);
 
-    // Callback: Refresh Ports
+    let cached_ports = std::rc::Rc::new(std::cell::RefCell::new(list_serial_ports()));
+
+    // Callback: Manual Refresh Ports button
     let handle_weak = main_window.as_weak();
+    let cached_ports_manual = cached_ports.clone();
     main_window.on_refresh_ports(move || {
         if let Some(ui) = handle_weak.upgrade() {
-            let ports = list_serial_ports();
-            let (ports_model, initial_port) = if ports.is_empty() {
-                let default_str = SharedString::from("No serial devices detected");
-                let items = vec![default_str.clone()];
-                (ModelRc::new(VecModel::from(items)), default_str)
-            } else {
-                let items: Vec<SharedString> = ports
-                    .iter()
-                    .map(|p| SharedString::from(p.as_str()))
-                    .collect();
-                let first = items[0].clone();
-                (ModelRc::new(VecModel::from(items)), first)
-            };
-            ui.set_available_ports(ports_model);
-
-            let cur_motor = ui.get_selected_motor_port();
-            if cur_motor.is_empty()
-                || cur_motor == "No serial devices detected"
-                || !ports.iter().any(|p| p == cur_motor.as_str())
-            {
-                ui.set_selected_motor_port(initial_port.clone());
-            }
-
-            let cur_display = ui.get_selected_display_port();
-            if cur_display.is_empty()
-                || cur_display == "No serial devices detected"
-                || !ports.iter().any(|p| p == cur_display.as_str())
-            {
-                ui.set_selected_display_port(initial_port);
-            }
+            *cached_ports_manual.borrow_mut() = list_serial_ports();
+            update_ports_in_ui(&ui);
         }
     });
+
+    // Auto-refresh timer: polls every 1200 ms to detect hotplugged or disconnected serial devices
+    let _refresh_timer = slint::Timer::default();
+    let handle_weak = main_window.as_weak();
+    let cached_ports_timer = cached_ports.clone();
+    _refresh_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(1200),
+        move || {
+            if let Some(ui) = handle_weak.upgrade() {
+                // Never disrupt ongoing firmware flashing operations
+                if ui.get_motor_is_flashing() || ui.get_display_is_flashing() {
+                    return;
+                }
+                let current_ports = list_serial_ports();
+                let mut cached = cached_ports_timer.borrow_mut();
+                if current_ports != *cached {
+                    *cached = current_ports;
+                    update_ports_in_ui(&ui);
+                }
+            }
+        },
+    );
 
     // Callback: Browse Motor .Pack File
     let handle_weak = main_window.as_weak();

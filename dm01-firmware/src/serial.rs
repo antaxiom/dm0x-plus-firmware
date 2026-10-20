@@ -88,6 +88,7 @@ extern "system" {
     fn SetCommTimeouts(hFile: *mut std::ffi::c_void, lpCommTimeouts: *const COMMTIMEOUTS) -> i32;
     fn EscapeCommFunction(hFile: *mut std::ffi::c_void, dwFunc: u32) -> i32;
     fn PurgeComm(hFile: *mut std::ffi::c_void, dwFlags: u32) -> i32;
+    fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(windows)]
@@ -472,11 +473,50 @@ fn list_windows_serial_ports(ports: &mut Vec<String>) {
             }
         }
     }
+
+    // 4. Fallback direct probe COM1..COM32 using CreateFileW
+    // Handles virtual/USB serial ports where QueryDosDeviceW is restricted.
+    for i in 1..=32 {
+        let com = format!("COM{}", i);
+        if !ports.iter().any(|p| p.eq_ignore_ascii_case(&com)) {
+            let win_path = format!(r"\\.\{}", com);
+            let wide: Vec<u16> = win_path.encode_utf16().chain(std::iter::once(0)).collect();
+            const GENERIC_READ: u32 = 0x80000000;
+            const OPEN_EXISTING: u32 = 3;
+            const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    GENERIC_READ,
+                    0,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                ports.push(com);
+            } else {
+                let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                // 5 = ERROR_ACCESS_DENIED, 32 = ERROR_SHARING_VIOLATION (port exists and is active)
+                if err == 5 || err == 32 {
+                    ports.push(com);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
 fn list_ports_from_registry(ports: &mut Vec<String>) {
-    const HKEY_LOCAL_MACHINE: *mut std::ffi::c_void = 0x80000002 as usize as *mut std::ffi::c_void;
+    // HKEY_LOCAL_MACHINE is defined as ((HKEY)(ULONG_PTR)((LONG)0x80000002))
+    // which sign-extends to 0xFFFFFFFF80000002 on 64-bit Windows.
+    const HKEY_LOCAL_MACHINE: *mut std::ffi::c_void = -2147483646isize as *mut std::ffi::c_void;
     const KEY_READ: u32 = 0x20019;
     const ERROR_SUCCESS: i32 = 0;
     const REG_SZ: u32 = 1;

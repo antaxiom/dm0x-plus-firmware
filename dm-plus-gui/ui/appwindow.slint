@@ -8,7 +8,7 @@ component AdwButton inherits Rectangle {
     callback clicked();
 
     height: 38px;
-    min-width: 140px;
+    min-width: 80px;
     border-radius: 8px;
     background: !root.enabled ? #2a2a2a : (
         root.primary ? (
@@ -523,7 +523,16 @@ export component MainWindow inherits Window {
                             ComboBox {
                                 model: root.available-ports;
                                 current-value <=> root.selected-motor-port;
-                                width: 380px;
+                                horizontal-stretch: 1;
+                                min-width: 0px;
+                            }
+                            AdwButton {
+                                text: "Refresh";
+                                width: 90px;
+                                enabled: !root.motor-is-flashing;
+                                clicked => {
+                                    root.refresh-ports();
+                                }
                             }
                         }
 
@@ -819,7 +828,16 @@ export component MainWindow inherits Window {
                             ComboBox {
                                 model: root.available-ports;
                                 current-value <=> root.selected-display-port;
-                                width: 380px;
+                                horizontal-stretch: 1;
+                                min-width: 0px;
+                            }
+                            AdwButton {
+                                text: "Refresh";
+                                width: 90px;
+                                enabled: !root.display-is-flashing;
+                                clicked => {
+                                    root.refresh-ports();
+                                }
                             }
                         }
 
