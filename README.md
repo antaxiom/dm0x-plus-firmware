@@ -67,7 +67,7 @@ Here is the verified functionality available in this repository:
 
 4. **Clean-Room Motor Controller Architecture (`dm01-firmware`):**
    - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time clamps (6.0% to 94.0%), and Hall observer.
-   - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport, 40.27:1 reduction) and **DM02** (internal 6-FET, 18A Sport, 53.00:1 reduction).
+   - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport, 40.27:1 reduction) and **DM02** (internal 6-FET, 18A Sport, 53.00:1 reduction), with hard safety ceilings (32.0 A max for DM01, 20.0 A max for DM02) and active UI/firmware warnings whenever exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
    - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` (MSP `0x20005628`) and `dm02_firmware` (MSP `0x20005620`).
    - **Automatic Dynamic Span Tracking (`AutoSpanTracking`):** Dynamic scaling pinning nominal deflection to 2.3 V, adapting to thermal zero-point drift and matching realistic human pedal effort.
    - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft current (<= 30%) below 18 RPM to protect the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic modulation.
@@ -81,7 +81,7 @@ Here is the verified functionality available in this repository:
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 57 automated unit, integration, and end-to-end physical simulation tests running in CI (48 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 67 automated unit, integration, and end-to-end physical simulation tests running in CI (58 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
 
 6. **Native Serial Transport & Cross-Platform Parity:**

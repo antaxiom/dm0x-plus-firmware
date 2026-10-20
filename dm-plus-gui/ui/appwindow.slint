@@ -269,8 +269,16 @@ export component MainWindow inherits Window {
                                         root.browse-motor-pack();
                                     } else if val == "DM01 Open Firmware v0.3.0 (Built-in)" {
                                         root.motor-target = "DM01 (External 12-FET)";
+                                        if root.max-current-a > 32 {
+                                            root.max-current-a = 30;
+                                        } else if root.max-current-a == 18 {
+                                            root.max-current-a = 30;
+                                        }
                                     } else if val == "DM02 Open Firmware v0.3.0 (Built-in)" {
                                         root.motor-target = "DM02 (Integrated 6-FET)";
+                                        if root.max-current-a > 20 {
+                                            root.max-current-a = 18;
+                                        }
                                     }
                                 }
                                 horizontal-stretch: 1;
@@ -460,15 +468,52 @@ export component MainWindow inherits Window {
                                         text: "\{root.max-current-a} A (\{root.max-current-a * 48} W @ 48V)";
                                         font-size: 13px;
                                         font-weight: 600;
-                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #3584e4;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : (
+                                            ((root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                             (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30)) ? #ff9800 : #3584e4
+                                        );
                                     }
                                 }
                                 Slider {
-                                    minimum: 10;
-                                    maximum: 35;
+                                    minimum: 5;
+                                    maximum: root.motor-target == "DM02 (Integrated 6-FET)" ? 20 : 32;
                                     value: root.max-current-a;
                                     enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
-                                    changed(val) => { root.max-current-a = Math.round(val); }
+                                    changed(val) => {
+                                        let rounded = Math.round(val);
+                                        let cap = root.motor-target == "DM02 (Integrated 6-FET)" ? 20 : 32;
+                                        root.max-current-a = Math.min(Math.max(rounded, 5), cap);
+                                    }
+                                }
+                                if (root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                   (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30) : Rectangle {
+                                    background: #3d2600;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #ff9800;
+
+                                    HorizontalLayout {
+                                        padding: 8px;
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        Text {
+                                            text: "⚠️";
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: root.motor-target == "DM02 (Integrated 6-FET)" ?
+                                                "Warning: Current above 18A exceeds stock DM02 factory limits (18A max). May cause thermal throttling on internal 6-FET controller." :
+                                                "Warning: Current above 30A exceeds stock DM01 factory limits (30A max). Ensure battery and wiring support high continuous draw.";
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            color: #ffb74d;
+                                            wrap: word-wrap;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
                                 }
                             }
 

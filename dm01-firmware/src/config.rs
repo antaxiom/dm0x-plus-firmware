@@ -195,6 +195,16 @@ pub struct FocSpecialConfig {
     pub flux_weak_current_a: u8,
 }
 
+/// Stock factory continuous current ceiling for DM01 (30.0 A).
+pub const DM01_STOCK_MAX_CURRENT_MA: u32 = 30_000;
+/// Absolute maximum allowed current ceiling for DM01 (32.0 A).
+pub const DM01_ABSOLUTE_MAX_CURRENT_MA: u32 = 32_000;
+
+/// Stock factory continuous current ceiling for DM02 (18.0 A).
+pub const DM02_STOCK_MAX_CURRENT_MA: u32 = 18_000;
+/// Absolute maximum allowed current ceiling for DM02 (20.0 A).
+pub const DM02_ABSOLUTE_MAX_CURRENT_MA: u32 = 20_000;
+
 /// Complete parameter set for the DM01 / DM02 controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MotorConfig {
@@ -204,7 +214,7 @@ pub struct MotorConfig {
     pub slide_bike_enabled: bool,
     pub levels: [AssistLevelConfig; MAX_ASSIST_LEVELS],
 
-    /// Controller current limits (`5A..=40A` in mA; V6510C DM01 defaults: 10A Eco, 18A City, 30A Sport).
+    /// Controller current limits (`5A..=32A` in mA; V6510C DM01 defaults: 10A Eco, 18A City, 30A Sport; DM02: 8A, 12A, 18A).
     pub max_current_eco_ma: u32,
     pub max_current_city_ma: u32,
     pub max_current_sport_ma: u32,
@@ -485,19 +495,50 @@ impl MotorConfig {
         ((num + 640_000) / 1_280_000) as u16
     }
 
-    /// Returns the mode current limit in mA, applying the V6510C constant-power cap above 50.0 V.
+    /// Returns the mode current limit in mA, applying the V6510C constant-power cap above 50.0 V,
+    /// bounded by the absolute hardware limit of 32.0 A.
     pub fn mode_current_limit_ma(&self, mode: RidingMode, actual_battery_mv: u32) -> u32 {
         let base_ma = match mode {
             RidingMode::Eco => self.max_current_eco_ma,
             RidingMode::City => self.max_current_city_ma,
             RidingMode::Sport => self.max_current_sport_ma,
         }
-        .min(40_000);
+        .min(DM01_ABSOLUTE_MAX_CURRENT_MA);
         if actual_battery_mv <= 50_000 {
             base_ma
         } else {
             ((base_ma as u64 * 50_000) / (actual_battery_mv as u64)) as u32
         }
+    }
+
+    /// Enforces hard current ceilings: 32.0 A for DM01 and 20.0 A for DM02.
+    ///
+    /// Clamps `max_current_sport_ma`, `max_current_city_ma`, and `max_current_eco_ma` so they
+    /// never exceed the hardware-enforced limits (and ensures minimum of 5.0 A).
+    ///
+    /// Returns `true` if current is within factory stock ratings (<=30A for DM01, <=18A for DM02),
+    /// or `false` if exceeding stock ratings (indicating an over-stock warning is warranted).
+    pub fn enforce_current_limits(&mut self, is_dm02: bool) -> bool {
+        let max_allowed = if is_dm02 {
+            DM02_ABSOLUTE_MAX_CURRENT_MA
+        } else {
+            DM01_ABSOLUTE_MAX_CURRENT_MA
+        };
+        let stock_max = if is_dm02 {
+            DM02_STOCK_MAX_CURRENT_MA
+        } else {
+            DM01_STOCK_MAX_CURRENT_MA
+        };
+
+        self.max_current_sport_ma = self.max_current_sport_ma.clamp(5_000, max_allowed);
+        self.max_current_city_ma = self
+            .max_current_city_ma
+            .clamp(5_000, self.max_current_sport_ma);
+        self.max_current_eco_ma = self
+            .max_current_eco_ma
+            .clamp(5_000, self.max_current_city_ma);
+
+        self.max_current_sport_ma <= stock_max
     }
 
     /// Returns the active assist level configuration (`1..=level_count`).
@@ -517,5 +558,99 @@ impl MotorConfig {
             .map(|l| l.speed_limit_deci_kph)
             .max()
             .unwrap_or(400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dm01_default_within_stock_limits() {
+        let mut cfg = MotorConfig::default_dm01();
+        assert_eq!(cfg.max_current_sport_ma, 30_000);
+        let within_stock = cfg.enforce_current_limits(false);
+        assert!(
+            within_stock,
+            "DM01 stock default (30A) must be within stock limits"
+        );
+        assert_eq!(cfg.max_current_sport_ma, 30_000);
+    }
+
+    #[test]
+    fn test_dm02_default_within_stock_limits() {
+        let mut cfg = MotorConfig::default_dm02();
+        assert_eq!(cfg.max_current_sport_ma, 18_000);
+        let within_stock = cfg.enforce_current_limits(true);
+        assert!(
+            within_stock,
+            "DM02 stock default (18A) must be within stock limits"
+        );
+        assert_eq!(cfg.max_current_sport_ma, 18_000);
+    }
+
+    #[test]
+    fn test_dm01_hard_cap_32a_and_warning() {
+        let mut cfg = MotorConfig::default_dm01();
+        // Request 35A (exceeds 32A hard cap)
+        cfg.max_current_sport_ma = 35_000;
+        let within_stock = cfg.enforce_current_limits(false);
+        assert!(
+            !within_stock,
+            "35A exceeds stock 30A rating and must flag warning"
+        );
+        assert_eq!(
+            cfg.max_current_sport_ma, 32_000,
+            "Must be clamped to 32.0 A hard cap"
+        );
+
+        // Request 31A (within 32A hard cap, but exceeds 30A stock)
+        cfg.max_current_sport_ma = 31_000;
+        let within_stock = cfg.enforce_current_limits(false);
+        assert!(
+            !within_stock,
+            "31A exceeds stock 30A rating and must flag warning"
+        );
+        assert_eq!(
+            cfg.max_current_sport_ma, 31_000,
+            "31A is allowed under 32A hard cap"
+        );
+    }
+
+    #[test]
+    fn test_dm02_hard_cap_20a_and_warning() {
+        let mut cfg = MotorConfig::default_dm02();
+        // Request 25A (exceeds 20A hard cap)
+        cfg.max_current_sport_ma = 25_000;
+        let within_stock = cfg.enforce_current_limits(true);
+        assert!(
+            !within_stock,
+            "25A exceeds stock 18A rating and must flag warning"
+        );
+        assert_eq!(
+            cfg.max_current_sport_ma, 20_000,
+            "Must be clamped to 20.0 A hard cap"
+        );
+
+        // Request 19A (within 20A hard cap, but exceeds 18A stock)
+        cfg.max_current_sport_ma = 19_000;
+        let within_stock = cfg.enforce_current_limits(true);
+        assert!(
+            !within_stock,
+            "19A exceeds stock 18A rating and must flag warning"
+        );
+        assert_eq!(
+            cfg.max_current_sport_ma, 19_000,
+            "19A is allowed under 20A hard cap"
+        );
+    }
+
+    #[test]
+    fn test_mode_current_limit_hard_cap() {
+        let mut cfg = MotorConfig::default_dm01();
+        cfg.max_current_sport_ma = 50_000; // Malformed setting
+                                           // At 48V (<= 50V), it must never exceed 32.0 A
+        let limited = cfg.mode_current_limit_ma(RidingMode::Sport, 48_000);
+        assert_eq!(limited, 32_000);
     }
 }
