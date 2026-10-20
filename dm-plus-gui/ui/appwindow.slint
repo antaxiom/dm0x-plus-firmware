@@ -373,48 +373,43 @@ export component MainWindow inherits Window {
                                     current-value <=> root.street-legal-mode;
                                     enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
-                                if root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" : Rectangle {
-                                    background: #1c2e40;
-                                    border-radius: 6px;
-                                    border-width: 1px;
-                                    border-color: #3584e4;
+                            }
 
-                                    HorizontalLayout {
-                                        padding: 8px;
-                                        spacing: 8px;
-                                        alignment: start;
+                            // Stable, fixed-height compliance info banner (Zero jump, Zero overlap, Libadwaita 8px radius)
+                            Rectangle {
+                                height: 56px;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                clip: true;
+                                background: root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" ? #0e3a1f : (
+                                    root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" ? #1c2e40 : #2a2a2a
+                                );
+                                border-color: root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" ? #2ec27e : (
+                                    root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" ? #3584e4 : #383838
+                                );
 
-                                        Text {
-                                            text: "Street-Legal On Boot: Enforces 25 km/h & 250W by default. To temporarily toggle into Off-Road mode on the bike: Hold Brake Lever + Power-On at startup. (Select Permanent Lock below to forbid all bypasses).";
-                                            font-size: 11px;
-                                            font-weight: 500;
-                                            color: #99c1f1;
-                                            wrap: word-wrap;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                        }
-                                    }
-                                }
-                                if root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" : Rectangle {
-                                    background: #0e3a1f;
-                                    border-radius: 6px;
-                                    border-width: 1px;
-                                    border-color: #2ec27e;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 6px;
+                                    padding-bottom: 6px;
+                                    alignment: center;
 
-                                    HorizontalLayout {
-                                        padding: 8px;
-                                        spacing: 8px;
-                                        alignment: start;
-
-                                        Text {
-                                            text: "EN15194 / EPAC Tamper-Proof Lock Active: Strictly enforces 25.0 km/h cutoff and 250W continuous limit. Standalone throttle capped to 6 km/h walk-assist. Brake+Power boot combo, speed bypasses, and display menu overrides are permanently locked out.";
-                                            font-size: 11px;
-                                            font-weight: 500;
-                                            color: #8ff0a4;
-                                            wrap: word-wrap;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                        }
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" ?
+                                            "EN15194 Tamper-Proof: Strictly 25 km/h & 250W continuous. Throttle capped to 6 km/h. Boot combos and display bypasses are permanently locked out." :
+                                            (root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" ?
+                                                "Street-Legal On Boot: Enforces 25 km/h & 250W limit. Hold Brake Lever + Power-On at startup to temporarily switch to Off-Road mode." :
+                                                "Off-Road Mode: Limits configurable up to hardware rating (30A DM01 / 18A DM02). Speed limiter and power ceilings unlocked for off-road use.");
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        color: root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" ? #8ff0a4 : (
+                                            root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" ? #99c1f1 : #9a9996
+                                        );
+                                        wrap: word-wrap;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }
@@ -425,15 +420,15 @@ export component MainWindow inherits Window {
                                     text: "Firmware Safety & Assist Defaults";
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #77767b;
+                                    color: #deddda;
                                 }
                                 Rectangle {
-                                    height: 38px;
+                                    height: 36px;
                                     clip: true;
                                     Text {
                                         width: 100%;
                                         height: 100%;
-                                        text: "Built-in firmware includes safe open defaults: Gear-Safe progressive cadence knee (soft assist below 18 RPM protecting nylon gear) & Unified Level Ceilings. Can be tuned at runtime via display proxies.";
+                                        text: "Built-in firmware includes safe open defaults: Gear-Safe progressive cadence ramp (protects nylon gear below 18 RPM) & Unified Level Ceilings. Tunable via display menus.";
                                         font-size: 11px;
                                         color: #77767b;
                                         wrap: word-wrap;
@@ -510,34 +505,49 @@ export component MainWindow inherits Window {
                                         root.max-current-a = Math.min(Math.max(rounded, 5), cap);
                                     }
                                 }
-                                if (root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
-                                   (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30) : Rectangle {
-                                    background: #3d2600;
-                                    border-radius: 6px;
-                                    border-width: 1px;
-                                    border-color: #ff9800;
+                            }
 
-                                    HorizontalLayout {
-                                        padding: 8px;
-                                        spacing: 8px;
-                                        alignment: start;
+                            // Stable, fixed-height electrical limit banner (Zero jump, Zero overlap, Libadwaita 8px radius)
+                            Rectangle {
+                                height: 56px;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                clip: true;
+                                background: ((root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                             (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30)) ? #3d2600 : #2a2a2a;
+                                border-color: ((root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                               (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30)) ? #ff9800 : #383838;
 
-                                        Text {
-                                            text: "⚠️";
-                                            font-size: 13px;
-                                            vertical-alignment: center;
-                                        }
-                                        Text {
-                                            text: root.motor-target == "DM02 (Integrated 6-FET)" ?
-                                                "Warning: Current above 18A exceeds stock DM02 factory limits (18A max). May cause thermal throttling on internal 6-FET controller." :
-                                                "Warning: Current above 30A exceeds stock DM01 factory limits (30A max). Ensure battery and wiring support high continuous draw.";
-                                            font-size: 11px;
-                                            font-weight: 500;
-                                            color: #ffb74d;
-                                            wrap: word-wrap;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                        }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 6px;
+                                    padding-bottom: 6px;
+                                    spacing: 8px;
+                                    alignment: center;
+
+                                    if ((root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                        (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30)) : Text {
+                                        text: "⚠️";
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: (root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ?
+                                            "Warning: Current above 18A exceeds DM02 factory rating (18A max). May cause thermal throttling on internal 6-FET controller." :
+                                            ((root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30) ?
+                                                "Warning: Current above 30A exceeds DM01 factory rating (30A max). Ensure battery and wiring support high continuous draw." :
+                                                "Within Factory Rating: Continuous current is within factory thermal specifications (30A DM01 / 18A DM02). Standard cooling dissipation.");
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        color: ((root.motor-target == "DM02 (Integrated 6-FET)" && root.max-current-a > 18) ||
+                                                (root.motor-target != "DM02 (Integrated 6-FET)" && root.max-current-a > 30)) ? #ffb74d : #9a9996;
+                                        wrap: word-wrap;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
                                     }
                                 }
                             }
@@ -551,7 +561,7 @@ export component MainWindow inherits Window {
                                     color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                 }
                                 Rectangle {
-                                    height: 32px;
+                                    height: 36px;
                                     clip: true;
                                     Text {
                                         width: 100%;
@@ -676,7 +686,7 @@ export component MainWindow inherits Window {
                             background: #2a1b0a;
                             border-color: #e5a50a;
                             border-width: 1px;
-                            border-radius: 6px;
+                            border-radius: 8px;
                             HorizontalLayout {
                                 padding-left: 12px;
                                 padding-right: 12px;
@@ -973,7 +983,7 @@ export component MainWindow inherits Window {
                             background: #2a1b0a;
                             border-color: #e5a50a;
                             border-width: 1px;
-                            border-radius: 6px;
+                            border-radius: 8px;
                             HorizontalLayout {
                                 padding-left: 12px;
                                 padding-right: 12px;
