@@ -161,6 +161,18 @@ impl Dm01Controller {
             self.config.temp_ctl_max_c,
             battery_dv,
         );
+        let global_ceil_da = if self.config.is_street_legal_locked() {
+            // EN15194 250W continuous limit: at battery voltage, clamp continuous current to ~250W
+            let en15194_max_da = if battery_dv > 0 {
+                ((2500u32 * 10) / (battery_dv as u32)) as u16
+            } else {
+                55
+            };
+            global_ceil_da.min(en15194_max_da.max(60))
+        } else {
+            global_ceil_da
+        };
+
         let level_ceil_da = compute_level_power_ceiling_da(
             mode_max_da,
             sport_max_da,
@@ -170,6 +182,11 @@ impl Dm01Controller {
             self.config.temp_ctl_max_c,
             battery_dv,
         );
+        let level_ceil_da = if self.config.is_street_legal_locked() {
+            level_ceil_da.min(global_ceil_da)
+        } else {
+            level_ceil_da
+        };
 
         // 2. Stage 2A: Torque Sensor Curve (ignores Pwr[level], uses EAssist[level] and global_ceil_da)
         let torque_offset_da = (self.config.torque_min_out_current_ma / 100) as u16;
@@ -205,23 +222,37 @@ impl Dm01Controller {
         );
 
         // 4. Stage 2C: Throttle Curve (capped by level_ceil_da = Pwr[level])
+        let pedaling_forward = inputs.cadence_rpm > 0 && !inputs.backpedaling;
         let throttle_da = if self.config.throttle_enabled {
-            self.v6510c_throttle
-                .compute_current_da(inputs.throttle_adc_mv, level_ceil_da)
+            if self.config.is_street_legal_locked() && !pedaling_forward && !inputs.walk_assist_held
+            {
+                // Strict EN15194: No standalone throttle from standstill without pedaling (walk assist held is allowed up to 6 km/h)
+                0
+            } else {
+                self.v6510c_throttle
+                    .compute_current_da(inputs.throttle_adc_mv, level_ceil_da)
+            }
         } else {
             0
         };
 
         // 5. Stage 3: Arbitrator, ±0.2A/step Ramp, Speed Soft-Taper, and LVC 3.0V Cushion
-        let pedaling_forward = inputs.cadence_rpm > 0 && !inputs.backpedaling;
-        let speed_limit_deci_kph =
+        let mut speed_limit_deci_kph =
             if self.config.speed_sensor_fail_unlimit && inputs.wheel_speed_deci_kph == 0 {
-                0 // Speed limit bypassed when physical speed sensor fails/reads 0 and unlimit mode is active
+                if self.config.is_street_legal_locked() {
+                    250 // Never bypass speed limit under street legal lock
+                } else {
+                    0 // Speed limit bypassed when physical speed sensor fails/reads 0 and unlimit mode is active
+                }
             } else if inputs.walk_assist_held {
                 60
             } else {
                 level_cfg.speed_limit_deci_kph
             };
+
+        if self.config.is_street_legal_locked() {
+            speed_limit_deci_kph = speed_limit_deci_kph.min(250); // Hard clamp to 25.0 km/h
+        }
         let eff_speed = self.effective_wheel_speed_deci_kph(inputs);
         let final_da = self.v6510c_arbitrator.step_with_profile(
             cutoff,
@@ -643,6 +674,58 @@ mod tests {
         assert!(
             out_gearsafe_35.target_current_ma > out_stock_35.target_current_ma,
             "Gear-safe profile achieves full assist at 35 RPM ahead of stock 60 RPM"
+        );
+    }
+
+    #[test]
+    fn test_permanent_street_legal_lock_enforces_en15194() {
+        let config = MotorConfig {
+            street_legal_mode: crate::eeprom::StreetLegalMode::PermanentLock,
+            ..Default::default()
+        };
+        assert!(config.is_street_legal_locked());
+
+        let mut ctrl = Dm01Controller::new(config);
+        ctrl.mode = RidingMode::Sport;
+        ctrl.assist = AssistSelection::Level(5);
+
+        let mut inputs = default_inputs();
+        inputs.battery_voltage_mv = 48_000;
+        inputs.cadence_rpm = 0; // Standstill
+        inputs.throttle_adc_mv = 2500; // Rider hitting throttle at standstill
+
+        // 1. Throttle at standstill without pedaling must produce 0A (strict EN15194)
+        let out_standstill = ctrl.step_v6510c(&inputs);
+        assert_eq!(
+            out_standstill.target_current_ma, 0,
+            "No standalone throttle without pedaling"
+        );
+
+        // 2. Pedaling forward activates assist
+        inputs.cadence_rpm = 60;
+        inputs.torque_adc_mv = 2000;
+        inputs.wheel_speed_deci_kph = 200; // 20.0 km/h (< 25 km/h)
+        for _ in 0..100 {
+            ctrl.step_v6510c(&inputs);
+        }
+        let out_riding = ctrl.step_v6510c(&inputs);
+        assert!(out_riding.target_current_ma > 0);
+        // Current must be capped within ~6.0A continuous (250W at 48V)
+        assert!(
+            out_riding.target_current_ma <= 6_000,
+            "Continuous power must respect 250W cap (got {} mA)",
+            out_riding.target_current_ma
+        );
+
+        // 3. Above 25.0 km/h (250 deci-kph), assist must cut off completely
+        inputs.wheel_speed_deci_kph = 255; // 25.5 km/h
+        for _ in 0..50 {
+            ctrl.step_v6510c(&inputs);
+        }
+        let out_overspeed = ctrl.step_v6510c(&inputs);
+        assert_eq!(
+            out_overspeed.target_current_ma, 0,
+            "Assist must cut off above 25.0 km/h"
         );
     }
 }

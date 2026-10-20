@@ -293,6 +293,9 @@ pub struct MotorConfig {
     pub temp_mot_over_mode: OverTempMode,
     pub temp_mot_min_c: i16,
     pub temp_mot_max_c: i16,
+
+    /// Street-legal compliance mode.
+    pub street_legal_mode: crate::eeprom::StreetLegalMode,
 }
 
 impl Default for MotorConfig {
@@ -418,6 +421,11 @@ impl MotorConfig {
             temp_mot_over_mode: OverTempMode::Power30Percent,
             temp_mot_min_c: 80,
             temp_mot_max_c: 110,
+            street_legal_mode: if cfg!(feature = "street_legal_lock") {
+                crate::eeprom::StreetLegalMode::PermanentLock
+            } else {
+                crate::eeprom::StreetLegalMode::Unrestricted
+            },
         }
     }
 
@@ -473,6 +481,72 @@ impl MotorConfig {
             self.wheel_circumference_mm = ((inches as u32 * 798) / 10) as u16;
         }
         self.speed_sensor_fail_unlimit = eeprom.speed_sensor_fail_unlimit();
+        if let Some(custom) = eeprom.custom_config() {
+            if cfg!(feature = "street_legal_lock") {
+                self.street_legal_mode = crate::eeprom::StreetLegalMode::PermanentLock;
+            } else {
+                self.street_legal_mode = custom.street_legal_mode;
+            }
+        }
+    }
+
+    /// Returns true if the controller is locked to European EN15194 / EPAC street-legal limits
+    /// (25.0 km/h speed cutoff, 250W continuous power, no standalone throttle above 6.0 km/h).
+    ///
+    /// Active when compiled with `--features street_legal_lock` or when the EEPROM compliance latch is set.
+    pub fn is_street_legal_locked(&self) -> bool {
+        cfg!(feature = "street_legal_lock")
+            || self.street_legal_mode == crate::eeprom::StreetLegalMode::PermanentLock
+    }
+
+    /// Dynamically derives the active [`TuningProfile`] from display menu proxy settings.
+    /// Leaves `throttle_control_mode` (0..12) completely decoupled and untouched!
+    pub fn derive_tuning_profile(&self) -> crate::tuning::TuningProfile {
+        let cadence_scaling = match self.torque_strength_value {
+            1..=3 => crate::tuning::CadenceScaling::LinearRamp {
+                ramp_start_rpm: 5,
+                target_rpm: 50,
+            },
+            7..=8 => crate::tuning::CadenceScaling::GearSafeKnee {
+                min_cadence_rpm: 5,
+                protect_knee_rpm: 18,
+                protect_limit_q8: 77, // ~30%
+                target_rpm: 35,
+            },
+            9..=10 => crate::tuning::CadenceScaling::Uncapped { min_cadence_rpm: 5 },
+            _ => crate::tuning::CadenceScaling::GearSafeKnee {
+                min_cadence_rpm: 5,
+                protect_knee_rpm: 18,
+                protect_limit_q8: 77, // ~30%
+                target_rpm: 35,
+            }, // 4..=6 default: GearSafe
+        };
+
+        let torque_response = match self.torque_filter {
+            5..=7 => crate::tuning::TorqueResponse::Progressive,
+            8..=10 => crate::tuning::TorqueResponse::HighSensitivity,
+            _ => crate::tuning::TorqueResponse::StockLinear,
+        };
+
+        let ceiling_policy = if self.speed_sensor_fail_unlimit {
+            crate::tuning::AssistCeilingPolicy::StockDualCeiling
+        } else {
+            crate::tuning::AssistCeilingPolicy::UnifiedLevelCeiling
+        };
+
+        crate::tuning::TuningProfile {
+            name: "DisplayMappedProfile",
+            cadence_scaling,
+            torque_response,
+            ceiling_policy,
+            span_policy: crate::tuning::TorqueSpanPolicy::AutoSpanTracking {
+                nominal_span_mv: 2300,
+            },
+            lvc_policy: crate::tuning::LvcCushionPolicy::TrueZeroCutoff { cushion_dv: 30 },
+            speed_soft_taper_window_0_1_kph: 15,
+            thermal_rollback_start_c: 70,
+            thermal_rollback_cutoff_c: 100,
+        }
     }
 
     /// Computes the midpoint gear ratio in fixed-point Q8 (256 = 1.0) from configured sprockets:

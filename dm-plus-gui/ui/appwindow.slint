@@ -85,6 +85,7 @@ export component MainWindow inherits Window {
     in-out property <string> ceiling-policy: "Unified Level Ceiling (Respects Pwr%)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
     in-out property <int> max-current-a: 30;
+    in-out property <string> street-legal-mode: "Unrestricted / Off-Road (Configurable)";
     in-out property <bool> motor-is-flashing: false;
     in-out property <float> motor-progress: 0.0;
     in-out property <string> motor-status: "Ready to flash or test.";
@@ -414,6 +415,47 @@ export component MainWindow inherits Window {
                                     ];
                                     current-value <=> root.ceiling-policy;
                                     enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Legal Compliance & Speed Lock";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
+                                }
+                                ComboBox {
+                                    model: [
+                                        "Unrestricted / Off-Road (Configurable)",
+                                        "Street-Legal Default (25 km/h, 250W, toggleable)",
+                                        "Permanent Street-Legal Lock (EN15194 Tamper-Proof)"
+                                    ];
+                                    current-value <=> root.street-legal-mode;
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
+                                }
+                                if root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" : Rectangle {
+                                    background: #0e3a1f;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #2ec27e;
+
+                                    HorizontalLayout {
+                                        padding: 8px;
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        Text {
+                                            text: "EN15194 / EPAC Tamper-Proof Lock Active: Strictly enforces 25.0 km/h cutoff and 250W continuous limit. Standalone throttle capped to 6 km/h walk-assist. Speed bypasses and display menu overrides are permanently locked out.";
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            color: #8ff0a4;
+                                            wrap: word-wrap;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
                                 }
                             }
                         }

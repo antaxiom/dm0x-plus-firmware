@@ -82,10 +82,12 @@ Here is the verified functionality available in this repository:
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 75 automated unit, integration, and end-to-end physical simulation tests running in CI (66 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 77 automated unit, integration, and end-to-end physical simulation tests running in CI (68 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
    - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift (400..1000 mV), throttle idle ADC (<= 1050 mV to prevent runaway hazards), and controller/motor thermals prior to applying main battery power.
    - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller SRAM (`0x20000300`) over standard Julet 5-pin UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash EEPROM wear.
+   - **Permanent Street-Legal Lock (EN15194 / EPAC):** Tamper-proof compliance engine (compile-time `--features street_legal_lock` and GUI latch) enforcing strict 25.0 km/h cutoff, 250W continuous power limit, and standalone throttle lockout at standstill.
+   - **Decoupled Handlebar Tuning Engine:** Full preservation of all 13 decompiled Throttle Modes (0..12) with autonomous on-trail profile switching via display proxies (`StrengthValue`, `Filter`, `SpeedSensorFail`) and standstill button combinations (`Walk + Up`).
 
 6. **Native Serial Transport & Cross-Platform Parity:**
    - Unified native serial engine operating on macOS, Linux, and Windows without external script dependencies.

@@ -344,6 +344,115 @@ impl EepromImage {
         let num = (cadence_rpm as u64) * ratio_q8 * circ_mm * 3;
         ((num + 640_000) / 1_280_000) as u16
     }
+
+    /// Returns the custom Open Firmware configuration stored in Block 1 zero padding (`0x04A..0x05A`),
+    /// or `None` if unconfigured / stock defaults.
+    pub fn custom_config(&self) -> Option<DmPlusCustomConfig> {
+        let off = DM_PLUS_CUSTOM_CONFIG_OFFSET;
+        if self.raw[off] == DM_PLUS_CUSTOM_MAGIC[0] && self.raw[off + 1] == DM_PLUS_CUSTOM_MAGIC[1]
+        {
+            Some(DmPlusCustomConfig {
+                tuning_profile: self.raw[off + 2],
+                ceiling_policy: self.raw[off + 3],
+                nylon_gear_knee_rpm: self.raw[off + 4],
+                lvc_cushion_deci_v: self.raw[off + 5],
+                thermal_rollback_start_c: self.raw[off + 6],
+                street_legal_mode: StreetLegalMode::from_u8(self.raw[off + 7]),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Writes custom Open Firmware configuration into Block 1 zero padding (`0x04A..0x05A`)
+    /// and refreshes block CRC-16 checksums.
+    pub fn set_custom_config(&mut self, cfg: &DmPlusCustomConfig) {
+        let off = DM_PLUS_CUSTOM_CONFIG_OFFSET;
+        self.raw[off] = DM_PLUS_CUSTOM_MAGIC[0];
+        self.raw[off + 1] = DM_PLUS_CUSTOM_MAGIC[1];
+        self.raw[off + 2] = cfg.tuning_profile;
+        self.raw[off + 3] = cfg.ceiling_policy;
+        self.raw[off + 4] = cfg.nylon_gear_knee_rpm;
+        self.raw[off + 5] = cfg.lvc_cushion_deci_v;
+        self.raw[off + 6] = cfg.thermal_rollback_start_c;
+        self.raw[off + 7] = cfg.street_legal_mode as u8;
+        // Zero reserved bytes [off+8..off+16]
+        let mut r = off + 8;
+        while r < off + 16 {
+            self.raw[r] = 0;
+            r += 1;
+        }
+        self.update_all_crcs();
+    }
+}
+
+/// Offset within EEPROM image where custom DM+ configuration is persisted (`Block 1: 0x04A..0x05A`).
+pub const DM_PLUS_CUSTOM_CONFIG_OFFSET: usize = 0x04A;
+
+/// Magic signature identifying active DM+ custom configuration ('D', '+').
+pub const DM_PLUS_CUSTOM_MAGIC: [u8; 2] = [0x44, 0x2B];
+
+/// Street-legal compliance mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StreetLegalMode {
+    /// Unrestricted / Off-Road: Limits configurable up to hardware rating (30A DM01, 18A DM02).
+    Unrestricted = 0,
+    /// Street-Legal Default: Defaults to 25 km/h and 250W continuous, toggleable via button combo.
+    StreetLegalDefault = 1,
+    /// Permanent Street-Legal Lock (EN15194 / EPAC):
+    /// Strictly enforces 25.0 km/h cutoff and 250W continuous limit.
+    /// Standalone throttle capped to 6.0 km/h walk-assist.
+    /// Display menu and UART speed/power overrides are permanently rejected.
+    PermanentLock = 2,
+}
+
+impl StreetLegalMode {
+    pub const fn from_u8(val: u8) -> Self {
+        match val {
+            1 => Self::StreetLegalDefault,
+            2 => Self::PermanentLock,
+            _ => Self::Unrestricted,
+        }
+    }
+}
+
+/// Custom Open Firmware configuration persisted in previously unused EEPROM Block 1 zero padding (`0x04A..0x05A`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmPlusCustomConfig {
+    /// Tuning profile selector:
+    /// 0: Stock V6510C
+    /// 1: GearSafe Progressive (Default)
+    /// 2: Uncapped Cadence
+    /// 3: Progressive Trail
+    /// 4: Commuter Comfort
+    pub tuning_profile: u8,
+    /// Assist ceiling policy:
+    /// 0: StockDualCeiling (Torque uses full Mode Current, ignoring Pwr%)
+    /// 1: UnifiedLevelCeiling (Torque respects assist level Pwr%)
+    pub ceiling_policy: u8,
+    /// Nylon primary reduction gear protection knee RPM (default: 18 RPM).
+    /// If 0, nylon gear protection is disabled.
+    pub nylon_gear_knee_rpm: u8,
+    /// Low-voltage cutoff linear cushion in 0.1V units (default: 30 = 3.0V).
+    pub lvc_cushion_deci_v: u8,
+    /// Thermal rollback initiation temperature in °C (default: 70°C).
+    pub thermal_rollback_start_c: u8,
+    /// Street-legal compliance mode.
+    pub street_legal_mode: StreetLegalMode,
+}
+
+impl Default for DmPlusCustomConfig {
+    fn default() -> Self {
+        Self {
+            tuning_profile: 1, // GearSafe Progressive default
+            ceiling_policy: 1, // Unified Level Ceiling default
+            nylon_gear_knee_rpm: 18,
+            lvc_cushion_deci_v: 30, // 3.0V
+            thermal_rollback_start_c: 70,
+            street_legal_mode: StreetLegalMode::Unrestricted,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +492,29 @@ mod tests {
         assert!(dm02.speed_sensor_fail_unlimit());
         assert_eq!(dm02.midpoint_gear_ratio_q8(), 656);
         assert_eq!(dm02.estimate_speed_deci_kph(60), 191); // 19.1 km/h
+    }
+
+    #[test]
+    fn test_dm_plus_custom_config_persistence_and_crc() {
+        let mut dm01 = EepromImage::default_dm01();
+        assert_eq!(dm01.custom_config(), None); // Stock has no custom config
+
+        let custom = DmPlusCustomConfig {
+            tuning_profile: 1, // GearSafe
+            ceiling_policy: 1, // Unified
+            nylon_gear_knee_rpm: 18,
+            lvc_cushion_deci_v: 30,
+            thermal_rollback_start_c: 72,
+            street_legal_mode: StreetLegalMode::PermanentLock,
+        };
+        dm01.set_custom_config(&custom);
+        assert_eq!(dm01.verify_all_blocks(), Ok(()));
+        assert_eq!(dm01.custom_config(), Some(custom));
+
+        // Test encryption round-trip
+        let flash = dm01.to_encrypted_flash();
+        let decrypted = EepromImage::from_encrypted_flash(&flash).expect("decrypted valid");
+        assert_eq!(decrypted.custom_config(), Some(custom));
     }
 
     #[test]

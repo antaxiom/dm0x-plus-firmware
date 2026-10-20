@@ -252,12 +252,76 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display
 
 ## 8. Roadmap To-Do: All-in-One GUI Patcher & Flasher
 
-The architectural foundation is established for a cross-platform desktop graphical interface (**ToSeven Control Center**):
-1. **Frontend Architecture:** Tauri 2.0 (Rust backend with light web UI) or Slint (native UI).
+The architectural foundation is established for a cross-platform desktop graphical interface (**DM+ Firmware Studio**):
+1. **Frontend Architecture:** Native Libadwaita dark desktop studio built with Slint and Rust.
 2. **Unified Flashing & Patching:**
-   - Auto-detects connected USB ports (`MegaHunt CDC USB` for displays, `FTDI/CH340` for controllers).
-   - Drag-and-drop firmware loading with visual lockout detection.
-   - One-click "Unlock & Flash" for displays.
+   - Auto-detects connected USB ports (`MegaHunt CDC USB` for displays, `FTDI/CH340/CP2102` for controllers).
+   - Embedded DM01 and DM02 standalone Open Firmware containers.
    - Interactive motor controller tuning sliders with direct `.Pack` generation and flashing.
+   - Offline display Intel HEX patch export and permanent lockout neutralization.
 3. **Safety Verification:** Built-in guidance for 48V current-limited bench power supply verification before flashing.
+
+---
+
+## 9. Handlebar-Configurable Custom Tuning & Menu Proxy Architecture
+
+To allow riders to switch Open Firmware features on the trail without requiring a PC, serial cable, or firmware reflash, DM+ Open Firmware introduces an **autonomous display proxy and button-combo engine**.
+
+### 9.1 Complete Decoupling of Throttle Functionality (Modes 0 to 12 Preserved)
+Riders retain **100% independent control over throttle behavior**. All 13 decompiled factory throttle modes (0 to 12) function as originally engineered (e.g. Mode 0 = strict EU 6 km/h walk, Mode 1 = assist-level matched, Mode 2 = override, Mode 8 = full-full, Mode 12 = scooter).
+
+### 9.2 Display Menu Proxies for Open Firmware Features
+Rather than colliding with throttle modes, custom open firmware features are mapped to natural, existing display settings:
+
+| Display Menu Setting | Display Range | Open Firmware Behavior |
+| :--- | :--- | :--- |
+| **`StrengthValue`** (Pedal Effort) | `1..10` | • **`1..3`:** Commuter Comfort (soft launch, high cadence assist)<br>• **`4..6`:** **Gear-Safe Progressive** (Default: protects nylon gear below 18 RPM)<br>• **`7..8`:** Progressive Trail (quadratic effort curve for gravel/roots)<br>• **`9..10`:** Uncapped Cadence (full climbing torque above 5 RPM; for metal gears) |
+| **`SpeedSensorFail`** | `0` (Unlimit) / `1` (Limit) | • **`0 (Unlimit)`:** **Stock Dual-Ceiling Policy** (Torque uses full Mode Current, ignoring `Pwr%`)<br>• **`1 (Limit)`:** **Unified Level Ceiling Policy** (Torque strictly respects the assist level's `Pwr%` limit) |
+| **`Filter`** (Torque Filter) | `1..10` | • **`1..4`:** Linear torque response with light/medium smoothing<br>• **`5..7`:** Progressive quadratic torque curve<br>• **`8..10`:** High-sensitivity commuter boost |
+| **`StartSpeed(rpm)`** | `0..30` RPM | • **`18`:** Sets nylon reduction gear protection knee to 18 RPM<br>• **`0`:** Disables nylon gear protection for all-metal gear sets |
+
+### 9.3 Handlebar Button Hold Combinations (No Menus Needed!)
+Because displays stream live button states over UART in `DisplayCommandFrame`, the controller monitors button holds while stationary (`0.0 km/h`):
+* **Hold Walk Assist (-) + Up (+) for 2 Seconds at Standstill:**
+  Cycles through Tuning Profiles sequentially:
+  1. *1 Confirmation Blip:* **Gear-Safe Progressive** (Nylon reduction gear protection active)
+  2. *2 Blips:* **Progressive Trail** (Quadratic trail modulation)
+  3. *3 Blips:* **Uncapped Cadence** (Technical hill climb, for metal gears)
+  4. *4 Blips:* **Commuter Comfort** (Gentle launch, high cadence sensitivity)
+  5. *5 Blips:* **Stock V6510C** (Factory stock linear ramp)
+  *Automatically saved to Flash Page 127 EEPROM so the setting survives power cycles.*
+* **Hold Brake Lever + Power-On:** Toggles Street-Legal Mode (unless locked).
+
+### 9.4 Reserve EEPROM Storage (`DmPlusCustomConfig` at `0x04A..0x05A`)
+The controller stores its custom state inside the 16 contiguous zero-padded reserve bytes discovered at `0x04A..0x05A` in Block 1 of the Flash EEPROM image:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmPlusCustomConfig {
+    pub tuning_profile: u8,           // 0: Stock, 1: GearSafe, 2: Uncapped, 3: Trail, 4: Commuter
+    pub ceiling_policy: u8,           // 0: StockDualCeiling, 1: UnifiedLevelCeiling
+    pub nylon_gear_knee_rpm: u8,      // Knee cadence threshold (default: 18 RPM)
+    pub lvc_cushion_deci_v: u8,       // Linear LVC reserve window (default: 30 = 3.0V)
+    pub thermal_rollback_start_c: u8, // Linear rollback start temperature (default: 70°C)
+    pub street_legal_mode: StreetLegalMode, // 0: Unrestricted, 1: Default, 2: PermanentLock
+}
+```
+
+---
+
+## 10. Permanent Street-Legal Compliance Lock (EN15194 / EPAC)
+
+For riders, builders, and manufacturers requiring strict European, Australian, or UK legal compliance, DM+ Open Firmware provides a **tamper-proof Permanent Street-Legal Lock**:
+
+1. **Compilation-Level Hard Lock (`--features street_legal_lock`):**
+   - Compiling the bare-metal firmware with `--features street_legal_lock` hard-codes EN15194 compliance into the ARM Cortex-M4F binary ROM.
+   - It is mathematically impossible to exceed legal limits or toggle off-road modes without re-flashing the controller.
+2. **Flash EEPROM Compliance Latch (`StreetLegalMode::PermanentLock`):**
+   - Can be locked directly via the desktop studio (`DM+ Firmware Studio`) or CLI (`toseven_pack`).
+   - Once set, the controller permanently ignores button combo overrides, display menu speed adjustments, and UART RAM pokes.
+3. **Enforced Operating Parameters:**
+   - **Speed Governor:** Hard clamped to **25.0 km/h** ($250\text{ deci-km/h}$) with a smooth 1.5 km/h soft-taper starting at 23.5 km/h.
+   - **Continuous Power:** Hard clamped to **250 W** continuous rating ($I_{\text{max}} \le 250\text{ W} / V_{\text{battery}} \approx 5.2\text{ A}$ at 48V, allowing compliant momentary acceleration headroom).
+   - **Standalone Throttle Lockout:** Standalone throttle at standstill without pedaling produces **0 A**. Throttle is strictly restricted to $6.0\text{ km/h}$ walk-assist mode.
+   - **Mandatory Pedaling Assist:** Motor torque and cadence assist strictly require active forward crank rotation ($> 0\text{ RPM}$).
+
 
