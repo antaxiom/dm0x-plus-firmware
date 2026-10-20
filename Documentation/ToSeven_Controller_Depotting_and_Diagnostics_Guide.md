@@ -82,7 +82,61 @@ Because aluminum conducts heat far better than rubber, heating from the metal si
 
 ---
 
-## 5. Non-Destructive Electrical Triage (Check Dead Controllers First)
+## 5. High-Value Decompilation & Reverse-Engineering Data
+
+For our open-source firmware and reverse-engineering project, physical access to a depotted controller PCB provides critical ground-truth data that cannot be 100% verified from disassembling `.Pack` containers alone.
+
+If you expose the board, please inspect, photograph (under macro/magnification), and document the following targets:
+
+### 1. MCU Part Number & Silicon Markings
+* **Location:** The main square IC located near the center of the PCB (typically an LQFP-48 or LQFP-64 package).
+* **Information Needed:** The full laser-etched text on the chip face:
+  - Manufacturer: STMicroelectronics (`STM32`), GigaDevice (`GD32`), or Artery (`AT32`).
+  - Part Number: e.g. `GD32F303RCT6`, `STM32F303CCT6`, or `STM32F103RFT6`.
+  - Date code and silicon revision.
+* **Why it matters:** Confirms the exact core clock ceiling (72 MHz on STM32 vs. 108–120 MHz on GD32), exact Flash sector layout for Page 127 EEPROM persistence, and hardware FPU capabilities.
+
+### 2. Dumping the Factory IAP Bootloader (0x08000000..0x080017FF)
+The official `.Pack` firmware containers only contain application code starting at Flash address `0x08001800`. The **first 6 KB (`0x08000000..0x080017FF`)** contains the factory In-Application Programming (IAP) bootloader, which has never been extracted directly from silicon.
+* **Extraction via SWD:**
+  Connect an ST-Link/V2 debugger to the SWD test points and run:
+  ```bash
+  # Dump the entire raw Flash memory (128 KB)
+  st-flash read full_flash_dump_128k.bin 0x08000000 0x20000
+
+  # Or dump specifically the 6 KB factory bootloader
+  st-flash read factory_bootloader_6k.bin 0x08000000 0x1800
+  ```
+  *(Or via OpenOCD: `dump_image bootloader.bin 0x08000000 0x1800`)*
+* **Why it matters:** Provides the bit-exact factory bootloader assembly, confirms whether Readout Protection (RDP) is disabled (`0xAA`) by default, and reveals any undocumented vendor diagnostic commands or recovery baud rates.
+
+### 3. Phase Shunt Resistor Values & Op-Amp Markings
+* **Location:** Heavy flat metal-strip or surface-mount resistors located immediately adjacent to the low-side MOSFET source legs and phase wire pads.
+* **Information Needed:**
+  - Laser marking on the shunts (e.g. `R002` = 2.0 mΩ, `R003` = 3.0 mΩ, `R005` = 5.0 mΩ, `1M0` = 1.0 mΩ).
+  - Part number on the small 8-pin operational amplifier IC (if discrete, e.g. SGM8262, LM358, or if using MCU internal op-amps).
+* **Why it matters:** Determines the exact Amperes-per-ADC-LSB conversion ratio for our Field Oriented Control (FOC) current measurement pipeline and hardware overcurrent trip comparator.
+
+### 4. Power MOSFET & Gate Driver Part Numbers
+* **Location:** The row of power transistors clamped against the aluminum heatsink casing (6 FETs on DM02, 12 FETs on DM01).
+* **Information Needed:**
+  - Part number on the MOSFET packages (e.g. CRST040N08N, NCE8580, IRFB4110).
+  - Part number on the gate driver IC (typically a 16-pin or 28-pin SOIC/QFN, e.g. FD6288Q, EG2133, or discrete totem-pole pairs).
+* **Why it matters:** Provides exact gate charge ($Q_g$) and switching speeds, allowing us to mathematically optimize PWM dead-time margins (currently clamped to 1.38 µs) and thermal dissipation.
+
+### 5. Analog Resistor Divider Ratios
+* **Battery Voltage Divider (PB0 / ADC Channel 8):** The pair of high-precision SMD resistors (one high-side connected to `B+`, one low-side to `GND`) feeding `PB0`. Reading their 3-digit/4-digit codes (e.g. `104` = 100 kΩ and `512` = 5.1 kΩ) provides the exact hardware attenuation constant.
+* **Torque Sensor Input Filter (PA4 / ADC Channel 4):** Resistor and capacitor values on the analog strain gauge line entering the MCU, validating our software low-pass filter time constants.
+* **Temperature NTC Divider (PB1 / ADC Channel 9):** Identifies the pull-up resistor value (typically 10 kΩ or 4.7 kΩ) used in the Steinhart-Hart thermistor lookup calculation.
+
+### 6. SWD Debug Port Pinout & PCB Test Point Map
+* **Location:** A cluster of circular gold/silver test pads on the board, often silk-screened with labels like `DIO`, `CLK`, `GND`, `3V3`, `TX`, `RX`, or `RST`.
+* **Action:** Photograph the test pad cluster with clear surrounding component landmarks.
+* **Why it matters:** Enables creating a definitive hardware unbricking and direct-SWD flashing guide, allowing developers and riders to revive dead controllers and flash custom firmware directly without the factory bootloader.
+
+---
+
+## 6. Non-Destructive Electrical Triage (Check Dead Controllers First)
 
 Before spending hours depotting dead units, run these diagnostic checks with a standard Digital Multimeter (DMM):
 
@@ -123,7 +177,7 @@ If the microcontroller is partially exposed:
 
 ---
 
-## 6. Summary: Targeted Depotting vs. Full Strip
+## 7. Summary: Targeted Depotting vs. Full Strip
 
 * **If repairing a blown MOSFET:** Only clear out the section along the outer aluminum heatsink rail over the 6 (or 12) power FETs. Leave the center logic potted to save time.
 * **If diagnosing a non-responsive controller:** Expose the DC-DC buck converter circuit (near the inductor coil and large capacitor) and the square MCU in the center.
