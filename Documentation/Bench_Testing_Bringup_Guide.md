@@ -155,17 +155,70 @@ Frame #001: 48.1 V | 0.0 A (0 W) | Temp: 24.2 °C | Speed: 0.0 km/h | Cadence: 0
 Frame #002: 48.1 V | 0.0 A (0 W) | Temp: 24.2 °C | Speed: 0.0 km/h | Cadence: 0 RPM | Faults: None [OK]
 ```
 
-### Step 6: No-Load Motor Spin Test
-1. Set bench power supply current limit to **2.5 A**.
-2. Connect throttle or apply a 1.2V–3.5V analog signal to the throttle pin.
-3. Observe motor spin:
-   - Motor should ramp smoothly up to maximum RPM without cogging or hesitation.
-   - Current draw at full speed no-load should be **0.8A to 1.4A** at 48V.
-   - If current hits the 2.5A ceiling with grinding noise, release throttle immediately and verify Hall sensor wire sequence.
+### Step 6: 3-Pillar Pre-Flight Verification (Before Applying Power to Inverter)
+
+Before connecting motor phase leads or attempting to spin the motor under power, verify the **three foundational pillars** of motor control:
+
+```
+[Phase A: Quiescent Current] ──> [Phase B: Shunt Auto-Zero] ──> [Phase C: Hand-Spin Hall Check]
+                                                                        │
+                                                                        ▼
+[Phase E: Gate Driver Dead-Time] <── [Phase D: 1.0A Clamped Spin Test] <─┘
+```
+
+#### Phase A: Quiescent Logic Current & Power Rail Check
+1. Power supply set to **48.0 V**, strictly clamped to **1.0 A**.
+2. Close Key switch.
+3. Observe power supply display:
+   - **Normal:** 40 mA to 65 mA (internal buck converter running, MCU active).
+   - **Fault (>150 mA or 1.0 A clamp):** Cut power immediately. Check for shorted gate drivers or shorted 3.3V rail.
+
+#### Phase B: Shunt Auto-Zero Verification
+At startup, `calibrate_shunts()` synchronously averages 256 injected ADC conversions while MOSFETs remain in High-Z (0A):
+1. In `monitor`, verify that reported phase current is **0.0 A**.
+2. The stationary resting bias on both Phase A (`PA6`) and Phase B (`PA5`) shunts must settle between **1700 and 2400 counts** (nominal midpoint is 2048 counts = 1.65 V on 12-bit ADC).
+3. If an ADC offset error or floating shunt is detected, the firmware leaves the inverter in High-Z.
+
+#### Phase C: Hand-Spin Hall Sensor & Cadence Verification
+With the power supply still clamped to 1.0 A and throttle at zero:
+1. **Rotate the motor axle / chainring slowly by hand in the forward direction.**
+2. In the telemetry monitor, observe that:
+   - Cadence and wheel speed register smoothly without spikes.
+   - Fault flags remain **None**. If a Hall disconnect (`0b000` or `0b111`) occurs, the firmware immediately flags an emergency cutoff.
+3. The 3 physical Hall sensors on `PB6, PB7, PB8` must transition through the standard 120° Gray code forward sequence:
+   $$1 \;\rightarrow\; 3 \;\rightarrow\; 2 \;\rightarrow\; 6 \;\rightarrow\; 4 \;\rightarrow\; 5 \;\rightarrow\; 1$$
+
+#### Phase D: Low-Current No-Load Throttle Spin (Strictly 1.0 A Clamp)
+1. Keep the bench power supply strictly clamped to **1.0 A at 48.0 V**.
+2. Apply very gentle throttle (5% to 10% deflection, ~1.2 V).
+3. **Observation:**
+   - **Normal:** Motor turns smoothly, quietly, and accelerates up to low RPM. Current draw should be **0.2 A to 0.5 A**.
+   - **Misaligned Hall / Phase Swap:** The motor will hum or vibrate without rotating, and the bench supply will immediately hit the 1.0 A current limit and fold back voltage. Because current is clamped to 1.0 A, **no damage occurs**. Release throttle immediately. Swap any two motor phase wires (e.g. Blue and Yellow) or adjust `angle_offset_deg` in the configuration.
+4. Once smooth low-speed rotation is confirmed, increase throttle gradually. No-load full-speed current should settle between **0.8 A and 1.4 A** at 48 V.
+
+#### Phase E: Gate Driver Dead-Time & Bootstrap Verification
+1. Verify that `TIM1->BDTR.DTG = 100` (~1.38 µs hardware dead-time) is active.
+2. The SVPWM duty cycle is strictly clamped to **[6.0%, 94.0%]**. The low-side MOSFET is guaranteed to conduct for at least 3.75 µs per 16 kHz cycle, keeping the high-side bootstrap capacitors fully charged.
 
 ---
 
-## 6. Display Bench Flashing & ISP Lockout Bypass
+## 6. Architecture Comparison: Factory V6510C vs. VESC vs. DM+
+
+To understand how our low-level motor control implementation compares with other major open-source firmware architectures (such as Benjamin Vedder's VESC and Casainho/Stancecoke's TSDZ2/Kunteng firmwares):
+
+| Subsystem | Stock Factory (`V6510C`) | VESC (Vedder ESC) | DM+ Open Firmware (`dm01-firmware`) |
+| :--- | :--- | :--- | :--- |
+| **Math Precision** | Hardware single-precision `f32` (FPU) at `0x0800D3C0` | Hardware single-precision `f32` (`mcpwm_foc.c`) | Fixed-point Q15 + hardware `f32` FPU parity (`compute_svpwm_v6510c_f32`) |
+| **Current Sampling** | Dual low-side shunts (`PA6` / `PA5`) triggered by TIM1 valley TRGO | Dual or triple shunts triggered by timer update event | Dual low-side shunts (`PA6` / `PA5`) synchronized to TIM1 center TRGO |
+| **Shunt Calibration** | 256 startup samples averaged in High-Z (`0x08009A6C`) | `mcpwm_foc_calibrate_offsets()` multi-sample average in High-Z | Exact 256-sample startup average programming `ADC1->JOFR1` / `ADC2->JOFR1` |
+| **Rotor Tracking** | 6-sector Hall table with PLL velocity step (`0x08004450`) | BEMF observer + Hall table interpolation (`m_hall_table[8]`) | 120° Gray code Hall observer + PLL step tracker with 100ms standstill decay |
+| **Modulation** | 7-segment Space Vector PWM with min-max common mode | 7-segment Space Vector Modulation (SVM Mode 1/2) | 7-segment Space Vector PWM with min-max neutral saddle injection |
+| **Dead-Time Margins** | Hard clamp to $[6.0\%, 94.0\%]$ (`0x080072BA`) | Configurable max modulation clamp (`max_duty = 0.95`) | Hard clamp to $[6.0\%, 94.0\%]$ ($ARR = 5999$) guaranteeing bootstrap refresh |
+| **Anti-Windup** | Clamped PI integrator saturation | Integrator clamping on voltage limits | Clamped integral saturation with immediate recovery on error reversal |
+
+---
+
+## 7. Display Bench Flashing & ISP Lockout Bypass
 
 ToSeven displays (`T24V`, `T154`, `LCD135C`, `M15`) use a MegaHunt MH1903/MH2020C microcontroller equipped with an internal USB CDC ISP bootloader:
 
@@ -188,7 +241,7 @@ ToSeven displays (`T24V`, `T154`, `LCD135C`, `M15`) use a MegaHunt MH1903/MH2020
 
 ---
 
-## 7. Troubleshooting & Recovery
+## 8. Troubleshooting & Recovery
 
 | Symptom | Probable Cause | Corrective Action |
 | :--- | :--- | :--- |
