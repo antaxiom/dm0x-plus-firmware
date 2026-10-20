@@ -258,6 +258,51 @@ impl Dm01SensorsHardware {
         usart3.cr3.write(0);
         usart3.cr1.write(0x200C); // UE (bit 13) | TE (bit 3) | RE (bit 2)
     }
+
+    /// Performs the factory 256-sample startup shunt auto-zero calibration matching V6510C at `0x08009A6C`.
+    ///
+    /// Synchronously averages 256 injected ADC conversions while inverter gates remain in High-Z (0A),
+    /// updates internal software zero-current offsets, and pre-loads `ADC1->JOFR1` and `ADC2->JOFR1`.
+    pub fn calibrate_shunts(&mut self) {
+        let adc1 = HardwarePeripherals::adc1();
+        let adc2 = HardwarePeripherals::adc2();
+
+        let mut sum_u: u32 = 0;
+        let mut sum_v: u32 = 0;
+
+        for _ in 0..256 {
+            // Trigger injected conversion via JSWSTART (bit 21 in CR2)
+            adc1.cr2.modify(|v| v | (1 << 21));
+
+            // Wait for JEOC (bit 2 in ADC1->SR)
+            while (adc1.sr.read() & (1 << 2)) == 0 {
+                core::hint::spin_loop();
+            }
+
+            // Read raw injected values
+            let val_u = adc1.jdr1.read() & 0x0FFF;
+            let val_v = adc2.jdr1.read() & 0x0FFF;
+
+            sum_u += val_u;
+            sum_v += val_v;
+
+            // Clear JEOC by clearing bit 2 in SR
+            adc1.sr.modify(|v| v & !(1 << 2));
+        }
+
+        let mean_u = (sum_u >> 8) as u16;
+        let mean_v = (sum_v >> 8) as u16;
+
+        // Sanity check: nominal 1.65V mid-point on 12-bit ADC is 2048 ± 350 counts (1698..2398)
+        if (1700..=2400).contains(&mean_u) {
+            self.shunt_offset_u = mean_u;
+            adc1.jofr1.write(mean_u as u32);
+        }
+        if (1700..=2400).contains(&mean_v) {
+            self.shunt_offset_v = mean_v;
+            adc2.jofr1.write(mean_v as u32);
+        }
+    }
 }
 
 impl Default for Dm01SensorsHardware {

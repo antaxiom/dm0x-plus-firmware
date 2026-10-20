@@ -5,6 +5,10 @@
 This runbook defines the official pre-flight bench testing protocol for **ToSeven DM01 (1000W / 750W)** and **DM02 (500W)** mid-drive motor controllers and displays prior to on-bike installation.
 
 > [!CAUTION]
+> ### CRITICAL SAFETY WARNING: BENCH TEST ONLY
+> **OPEN-SOURCE FIRMWARE MUST NOT BE INSTALLED ANYWHERE OTHER THAN A CONTROLLED BENCH TEST.**
+> Do NOT install open-source firmware on an assembled bicycle or attempt to ride with it at this stage. Open-source firmware is strictly intended for isolated bench bring-up, phase verification, and current-clamped diagnostics.
+>
 > **Bench Power Safety Rules:**
 > 1. **Never use a high-discharge e-bike lithium battery for initial bench flashing.** E-bike batteries can deliver >100A instantly during a fault, vaporizing PCB traces and silicon. Always use a current-limited DC bench power supply.
 > 2. **Current Limit Clamped to 1.0A:** During flashing and logic verification, strictly clamp the bench supply to **1.0A at 48.0V** (or 52.0V). Idle controller logic consumes only ~40–60 mA. A 1.0A clamp prevents MOSFET destruction in the event of phase shoot-through or improper gate drive.
@@ -133,12 +137,11 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash /
 Click [ Flash Firmware ]
 ```
 Expected sequence:
-1. Flasher listens at 115200 Baud for bootloader `IDENT` (`0x02, 0xFD`).
-2. Flasher transmits 21-byte wakeup frame (`0xC9, 0x77`, 7-bit encoded, CRC-16, `0x69` cipher).
-3. Bootloader acknowledges with `0x06` ACK.
-4. Flasher transmits 12-byte header frame.
-5. Flasher streams payload in 16-byte chunks with 1024-byte sector sync pacing.
-6. Controller verifies CRC-16 and jumps to Application Reset Handler (`0x08001A51`).
+1. Flasher listens at 38400 Baud (vendor factory default, with 115200 fallback) for bootloader `IDENT` (`0x02, 0xFD` or `0x06`).
+2. If in application mode, flasher transmits 21-byte encrypted wakeup frame at 9600 Baud (`0xC9, 0x77`, 7-bit encoded, `UartMask` high/low nibbles, ToSeven CRC-16, `0x69` cipher) and asserts DTR reset.
+3. Flasher transmits `0x06` ACK, pauses 10 ms, and transmits 12-byte header frame (size, sum, `UartMask`, baud rate index), receiving `0x06` ACK.
+4. Flasher streams payload in 16-byte chunks masked with Tier 2 wire stream XOR cipher (`b ^ UartMask`), receiving `0x06` ACK every 1024-byte (1 KB) sector.
+5. Controller bootloader verifies cumulative 32-bit byte sum against Flash memory (`0x04` EOT on match; `0x15` NAK on failure) and automatically restarts into the application.
 
 ### Step 5: Live Telemetry Verification
 After flashing completes, the controller begins broadcasting 18-byte telemetry frames at 9600 Baud:

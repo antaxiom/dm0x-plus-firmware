@@ -20,8 +20,9 @@ use std::time::Duration;
 fn query_ports_model() -> (ModelRc<SharedString>, SharedString) {
     let ports = list_serial_ports();
     if ports.is_empty() {
-        let items = vec![SharedString::from("No serial devices detected")];
-        (ModelRc::new(VecModel::from(items)), SharedString::from(""))
+        let default_str = SharedString::from("No serial devices detected");
+        let items = vec![default_str.clone()];
+        (ModelRc::new(VecModel::from(items)), default_str)
     } else {
         let items: Vec<SharedString> = ports
             .iter()
@@ -34,9 +35,16 @@ fn query_ports_model() -> (ModelRc<SharedString>, SharedString) {
 
 const EMBEDDED_DM01_OPEN_PACK: &[u8] =
     include_bytes!("../assets/TO7-DM01-OpenFirmware-v0.3.0.Pack");
+const EMBEDDED_DM02_OPEN_PACK: &[u8] =
+    include_bytes!("../assets/TO7-DM02-OpenFirmware-v0.3.0.Pack");
 
 fn get_motor_pack_bytes(source: &str, custom_path: &str) -> Result<Vec<u8>, String> {
-    if source.contains("Open Firmware") || source.contains("Built-in") {
+    if source.contains("DM02 Open Firmware") {
+        return Ok(EMBEDDED_DM02_OPEN_PACK.to_vec());
+    } else if source.contains("DM01 Open Firmware")
+        || source.contains("Open Firmware")
+        || source.contains("Built-in")
+    {
         return Ok(EMBEDDED_DM01_OPEN_PACK.to_vec());
     } else if source.contains("Custom") {
         let trimmed = custom_path.trim();
@@ -156,10 +164,21 @@ fn main() -> Result<(), slint::PlatformError> {
         {
             let path_str = path.to_string_lossy().to_string();
             if let Some(ui) = handle_weak.upgrade() {
-                ui.set_motor_custom_pack_path(SharedString::from(path_str));
+                ui.set_motor_custom_pack_path(SharedString::from(path_str.clone()));
                 ui.set_motor_firmware_source(SharedString::from(
                     "Custom .Pack File (Manual Selection)",
                 ));
+                // Automatically inspect custom .Pack header to detect target hardware!
+                if let Ok(bytes) = fs::read(&path_str) {
+                    if let Ok(meta) = parse_pack_metadata(&bytes) {
+                        let target_str = match meta.target {
+                            dm01_firmware::pack::MotorTarget::Dm01 => "DM01 (External 12-FET)",
+                            dm01_firmware::pack::MotorTarget::Dm02 => "DM02 (Integrated 6-FET)",
+                            dm01_firmware::pack::MotorTarget::Unknown(_) => "Custom / Other Device",
+                        };
+                        ui.set_motor_target(SharedString::from(target_str));
+                    }
+                }
             }
         } else if let Some(ui) = handle_weak.upgrade() {
             if ui.get_motor_custom_pack_path().is_empty() {
@@ -449,7 +468,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     return;
                 }
 
-                let customer_num = u16::from_le_bytes([pack_bytes[0x06], pack_bytes[0x07]]);
+                let customer_num = meta.customer_num();
 
                 // Put UI into flashing state
                 ui.set_motor_is_flashing(true);
@@ -462,7 +481,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     if is_dry_run {
                         // Simulated Dry-Run Execution
                         let steps = [
-                            (0.15, "Dry-Run: Probing bootloader at 115200 Baud..."),
+                            (0.15, "Dry-Run: Probing bootloader at 38400 Baud..."),
                             (0.30, "Dry-Run: Received IDENT (0x02, 0xFD). Sending wakeup frame..."),
                             (0.45, "Dry-Run: Header frame accepted (0x06 ACK)..."),
                             (0.65, "Dry-Run: Simulating 16-byte chunk and 1 KB sector pacing..."),
@@ -505,14 +524,14 @@ fn main() -> Result<(), slint::PlatformError> {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = h_open.upgrade() {
                                 ui.set_motor_status(SharedString::from(format!(
-                                    "Connecting to {} @ 9600 Baud (Timeout: 2.5s)...",
+                                    "Connecting to {} @ 38400 Baud (Timeout: 2.5s)...",
                                     port_msg
                                 )));
                                 ui.set_motor_progress(0.10);
                             }
                         });
 
-                        let mut serial = match PosixSerialPort::open(&port, 115_200) {
+                        let mut serial = match PosixSerialPort::open(&port, 38_400) {
                             Ok(p) => p,
                             Err(e) => {
                                 let h = handle_ui.clone();
@@ -532,12 +551,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         let flash_res = execute_motor_iap_flash(
                             &mut serial,
                             &payload,
-                            meta.payload_xor_key,
+                            meta.uart_mask,
                             customer_num,
                             move |ev| {
                                 let (frac, text) = match ev {
                                     MotorFlashProgress::ProbingBootloader => {
-                                        (0.15, "Probing bootloader at 115200 Baud...")
+                                        (0.15, "Probing bootloader at 38400 Baud...")
                                     }
                                     MotorFlashProgress::SendingWakeup9600 => {
                                         (0.25, "Sending 21-byte wakeup frame at 9600 Baud...")
@@ -694,7 +713,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = h_open.upgrade() {
                             ui.set_display_status(SharedString::from(format!(
-                                "Connecting to display on {} (Timeout: 2.5s)...",
+                                "Connecting to display on {} (Hold Power button, ensure 12-48V power)...",
                                 port_msg
                             )));
                             ui.set_display_progress(0.10);
@@ -771,7 +790,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 Err(FlasherError::Timeout) => {
                                     ui.set_display_progress(0.0);
                                     ui.set_display_status(SharedString::from(format!(
-                                        "Connection timed out: No response from display on {}. Ensure USB cable is connected.",
+                                        "Connection timed out on {}. Ensure display has 12-48V power and hold Power button down during flashing.",
                                         port_end
                                     )));
                                 }

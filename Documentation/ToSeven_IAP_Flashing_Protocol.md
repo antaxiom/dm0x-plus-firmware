@@ -115,8 +115,8 @@ When the controller is running its normal application firmware, the bootloader i
 Byte 0..1:   0xC9, 0x77                                (Wakeup Sync Header)
 Byte 2..6:   ProgramSize (5 bytes, 7-bit Big-Endian)   (val >> 28, val >> 21, val >> 14, val >> 7, val & 0x7F)
 Byte 7..11:  PayloadChecksum (5 bytes, 7-bit BE)       (sum >> 28, sum >> 21, sum >> 14, sum >> 7, sum & 0x7F)
-Byte 12:     PayloadXorKey >> 4                        (High nibble)
-Byte 13:     PayloadXorKey & 0x0F                      (Low nibble)
+Byte 12:     UartMask >> 4                             (High nibble of container header offset 0x17)
+Byte 13:     UartMask & 0x0F                           (Low nibble of container header offset 0x17)
 Byte 14:     0x5A                                      (CMD_IAP_PROGRAM)
 Byte 15..17: Customer_Num (3 bytes, 7-bit BE)          (cust >> 14, cust >> 7, cust & 0x7F)
 Byte 18..20: ToSeven CRC-16 (3 bytes, 7-bit BE)        (crc >> 14, crc >> 7, (crc & 0x7F) | 0x80)
@@ -125,9 +125,9 @@ Byte 18..20: ToSeven CRC-16 (3 bytes, 7-bit BE)        (crc >> 14, crc >> 7, (cr
 * **Hardware Pulse:** Immediately following packet transmission, the flasher pulses the `DTR` line low for 500 ms to trigger an external MCU reset.
 
 #### Step 2: Bootloader Handshake & Identification
-1. The flasher opens the port at **115200 Baud** and transmits single byte `0x02` (`BOOTLOADER_PROBE_BYTE`).
-2. The bootloader replies with two bytes: `0x02, 0xFD`.
-3. Receipt of `0x02` and `0xFD` confirms that the MCU is in bootloader mode (`MCU Identified`).
+1. The flasher probes the port at **38400 Baud** (official factory bootloader default) and transmits single byte `0x02` (`BOOTLOADER_PROBE_BYTE`).
+2. The bootloader replies with two bytes: `0x02, 0xFD` (or immediately with `0x06` ACK).
+3. Receipt of `0x02, 0xFD` (or `0x06`) confirms that the MCU is in bootloader mode (`MCU Identified`). If 38400 Baud does not respond, a fallback probe is attempted at **115200 Baud**.
 
 #### Step 3: Header Handshake
 1. The flasher transmits single byte `0x06` (`IAP_ACK_BYTE`).
@@ -137,22 +137,24 @@ Byte 18..20: ToSeven CRC-16 (3 bytes, 7-bit BE)        (crc >> 14, crc >> 7, (cr
    [0x00..0x01]: 0xFF, 0xFF (Sync word)
    [0x02..0x05]: ProgramSize (4 bytes, Little-Endian u32)
    [0x06..0x09]: PayloadChecksum (4 bytes, Little-Endian u32)
-   [0x0A]:       PayloadXorKey (e.g. 0x67 for DM01, 0xE2 for DM02)
+   [0x0A]:       UartMask (from container header offset 0x17, e.g. 0x89 for DM01 V6510C, 0xB5 for DM01 V6212C, 0xA9 for DM02 V6510C)
    [0x0B]:       BaudIndex (0 = 38400, 1 = 57600, 2 = 115200 Baud)
    ```
 4. The bootloader validates that `Customer_Num` matches the vendor mask and `CtlVer >= Current_MCU_Ver`.
 5. On success, the bootloader responds with byte `0x06` (`ACK`).
 
 #### Step 4: Flash Programming & Sector Pacing
-1. The flasher streams the **decrypted plaintext binary** in **16-byte (`0x10`) chunks**.
-2. Between 16-byte chunks, the flasher inserts an inter-chunk pacing delay (scaled according to baud rate: 50 µs for 115200 Baud, 150 µs for 57600 Baud, 300 µs for 38400 Baud).
-3. **Sector Handshake:** Every **1024 bytes (1 KB)** written (or at the end of the payload), the flasher halts and waits for the bootloader to erase and program the Flash sector.
-4. The bootloader returns byte `0x06` (`ACK`) once the 1 KB sector is committed to Flash memory.
+1. The flasher streams the firmware payload in **16-byte (`0x10`) chunks**, **XOR-masked byte-by-byte with `UartMask`** (Header byte 10).
+2. The bootloader de-masks incoming bytes on-the-fly using `UartMask` and commits them to Flash memory (`0x08001800`), updating its cumulative 32-bit byte sum.
+3. Between 16-byte chunks, the flasher inserts an inter-chunk pacing delay (~1 ms) to prevent UART RX FIFO overflow.
+4. **Sector Handshake:** Every **1024 bytes (1 KB)** written (or at the final partial sector), the flasher halts and waits for the bootloader's sector commit acknowledgment.
+5. The bootloader returns byte `0x06` (`ACK`) once each 1 KB sector is committed.
 
 #### Step 5: Finalization & Verification
-1. Once all payload bytes have been transferred, the flasher waits for the bootloader to verify the full-image CRC.
+1. Once all payload bytes have been transferred, the bootloader computes the cumulative 32-bit byte sum of the written application in Flash and compares it against `ProgramChkSum` (Header bytes 6..9).
 2. If verification succeeds, the bootloader transmits byte `0x04` (`EOT`).
-3. The flasher displays `Program sucessully` and commands the MCU to boot into application mode.
+3. If checksum mismatch occurs, the bootloader transmits byte `0x15` (`NAK`).
+4. On `0x04` (`EOT`), the flasher confirms successful verification and the MCU restarts into the new application.
 
 ---
 

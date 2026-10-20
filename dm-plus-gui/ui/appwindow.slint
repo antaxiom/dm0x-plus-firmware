@@ -54,7 +54,7 @@ component AdwCard inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "DM+ Firmware Studio";
-    min-width: 880px;
+    min-width: 940px;
     min-height: 720px;
     background: #242424;
     default-font-family: "Cantarell, Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif";
@@ -72,14 +72,14 @@ export component MainWindow inherits Window {
 
     // Reactive Properties
     in-out property <int> active-tab: 0;
-    in-out property <[string]> available-ports: ["No ports detected"];
-    in-out property <string> selected-motor-port: "";
-    in-out property <string> selected-display-port: "";
+    in-out property <[string]> available-ports: ["No serial devices detected"];
+    in-out property <string> selected-motor-port: "No serial devices detected";
+    in-out property <string> selected-display-port: "No serial devices detected";
     
     // Motor Tab State
     in-out property <string> motor-firmware-source: "DM01 Open Firmware v0.3.0 (Built-in)";
     in-out property <string> motor-custom-pack-path: "";
-    in-out property <string> motor-target: "DM01 (1000W / 750W 12-FET)";
+    in-out property <string> motor-target: "DM01 (External 12-FET)";
     in-out property <string> tuning-profile: "Gear-Safe Progressive (Recommended)";
     in-out property <string> ceiling-policy: "Unified Level Ceiling (Respects Pwr%)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
@@ -115,12 +115,14 @@ export component MainWindow inherits Window {
                 padding-bottom: 10px;
                 padding-left: 24px;
                 padding-right: 24px;
+                spacing: 20px;
                 alignment: space-between;
 
                 // Left: Title and Subtitle
                 VerticalLayout {
                     alignment: center;
                     spacing: 2px;
+                    min-width: 260px;
                     Text {
                         text: "DM+ Firmware Studio";
                         font-size: 16px;
@@ -137,9 +139,12 @@ export component MainWindow inherits Window {
                 // Center: Adwaita Segmented View Switcher (Pill Switcher)
                 HorizontalLayout {
                     alignment: center;
+                    min-width: 340px;
                     Rectangle {
                         height: 40px;
-                        width: 400px;
+                        min-width: 320px;
+                        preferred-width: 380px;
+                        max-width: 420px;
                         background: #242424;
                         border-radius: 9px;
                         border-width: 1px;
@@ -195,6 +200,7 @@ export component MainWindow inherits Window {
                 // Right: Refresh Ports Button
                 HorizontalLayout {
                     alignment: center;
+                    min-width: 120px;
                     AdwButton {
                         text: "Refresh Ports";
                         clicked => { root.refresh-ports(); }
@@ -247,12 +253,17 @@ export component MainWindow inherits Window {
                             ComboBox {
                                 model: [
                                     "DM01 Open Firmware v0.3.0 (Built-in)",
+                                    "DM02 Open Firmware v0.3.0 (Built-in)",
                                     "Custom .Pack File (Manual Selection)"
                                 ];
                                 current-value <=> root.motor-firmware-source;
                                 selected(val) => {
                                     if val == "Custom .Pack File (Manual Selection)" {
                                         root.browse-motor-pack();
+                                    } else if val == "DM01 Open Firmware v0.3.0 (Built-in)" {
+                                        root.motor-target = "DM01 (External 12-FET)";
+                                    } else if val == "DM02 Open Firmware v0.3.0 (Built-in)" {
+                                        root.motor-target = "DM02 (Integrated 6-FET)";
                                     }
                                 }
                                 horizontal-stretch: 1;
@@ -273,8 +284,11 @@ export component MainWindow inherits Window {
                             }
                             LineEdit {
                                 text: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)" ?
-                                    "[Embedded Container] TO7-DM01-OpenFirmware-v0.3.0.Pack (128 KB)" :
-                                    root.motor-custom-pack-path;
+                                    "[Embedded Container] TO7-DM01-OpenFirmware-v0.3.0.Pack (128 KB)" : (
+                                    root.motor-firmware-source == "DM02 Open Firmware v0.3.0 (Built-in)" ?
+                                    "[Embedded Container] TO7-DM02-OpenFirmware-v0.3.0.Pack (128 KB)" :
+                                    root.motor-custom-pack-path
+                                );
                                 placeholder-text: "No file selected (click Choose File...)";
                                 read-only: true;
                                 enabled: root.motor-firmware-source == "Custom .Pack File (Manual Selection)";
@@ -310,17 +324,23 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 spacing: 4px;
                                 Text {
-                                    text: "Target Hardware Model";
+                                    text: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ?
+                                        "Target Hardware Model (Auto-Detected from .Pack)" :
+                                        (root.motor-firmware-source == "DM02 Open Firmware v0.3.0 (Built-in)" ?
+                                            "Target Hardware Model (Locked: DM02)" :
+                                            "Target Hardware Model (Locked: DM01)");
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #deddda;
+                                    color: #77767b;
                                 }
                                 ComboBox {
                                     model: [
-                                        "DM01 (1000W / 750W 12-FET)",
-                                        "DM02 (500W Internal)"
+                                        "DM01 (External 12-FET)",
+                                        "DM02 (Integrated 6-FET)",
+                                        "Custom / Other Device"
                                     ];
                                     current-value <=> root.motor-target;
+                                    enabled: false;
                                 }
                             }
 
@@ -330,7 +350,7 @@ export component MainWindow inherits Window {
                                     text: "Pedal Assist Tuning Profile";
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #deddda;
+                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                 }
                                 ComboBox {
                                     model: [
@@ -340,7 +360,7 @@ export component MainWindow inherits Window {
                                         "Uncapped Cadence (Metal Gear Only)"
                                     ];
                                     current-value <=> root.tuning-profile;
-                                    enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
                                 Rectangle {
                                     height: 32px;
@@ -356,7 +376,8 @@ export component MainWindow inherits Window {
                                                     "Warning: Immediate full torque at 5 RPM without attenuation. High risk of stripping nylon gear." :
                                                     "Stock factory linear torque response with standard 60 RPM cadence ramp."));
                                         font-size: 11px;
-                                        color: root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ? #e01b24 : #9a9996;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b :
+                                            (root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ? #e01b24 : #9a9996);
                                         wrap: word-wrap;
                                         vertical-alignment: top;
                                     }
@@ -369,7 +390,7 @@ export component MainWindow inherits Window {
                                     text: "Assist Ceiling Policy";
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #deddda;
+                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                 }
                                 ComboBox {
                                     model: [
@@ -377,7 +398,7 @@ export component MainWindow inherits Window {
                                         "Stock Dual Ceiling (Torque uses Mode Max)"
                                     ];
                                     current-value <=> root.ceiling-policy;
-                                    enabled: root.motor-firmware-source == "DM01 Open Firmware v0.3.0 (Built-in)";
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
                             }
                         }
@@ -405,7 +426,7 @@ export component MainWindow inherits Window {
                                     text: "Battery Nominal Pack";
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #deddda;
+                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                 }
                                 ComboBox {
                                     model: [
@@ -414,6 +435,7 @@ export component MainWindow inherits Window {
                                         "36V (10S, 42.0V Peak)"
                                     ];
                                     current-value <=> root.battery-voltage;
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
                             }
 
@@ -425,19 +447,20 @@ export component MainWindow inherits Window {
                                         text: "Maximum Sport Current";
                                         font-size: 13px;
                                         font-weight: 500;
-                                        color: #deddda;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                     }
                                     Text {
                                         text: "\{root.max-current-a} A (\{root.max-current-a * 48} W @ 48V)";
                                         font-size: 13px;
                                         font-weight: 600;
-                                        color: #3584e4;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #3584e4;
                                     }
                                 }
                                 Slider {
                                     minimum: 10;
                                     maximum: 35;
                                     value: root.max-current-a;
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                     changed(val) => { root.max-current-a = Math.round(val); }
                                 }
                             }
@@ -448,7 +471,7 @@ export component MainWindow inherits Window {
                                     text: "Active Hardware Protections";
                                     font-size: 13px;
                                     font-weight: 500;
-                                    color: #deddda;
+                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                 }
                                 Rectangle {
                                     height: 32px;
@@ -456,9 +479,11 @@ export component MainWindow inherits Window {
                                     Text {
                                         width: 100%;
                                         height: 100%;
-                                        text: "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion with True Zero cutoff, and 500ms Hardware Watchdog (IWDG) are automatically active.";
+                                        text: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ?
+                                            "Custom .Pack file contains its own fixed current tables, voltage cutoffs, and safety limits." :
+                                            "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion with True Zero cutoff, and 500ms Hardware Watchdog (IWDG) are automatically active.";
                                         font-size: 11px;
-                                        color: #9a9996;
+                                        color: #77767b;
                                         wrap: word-wrap;
                                         vertical-alignment: top;
                                     }
@@ -560,6 +585,25 @@ export component MainWindow inherits Window {
                         ProgressIndicator {
                             progress: root.motor-progress;
                         }
+
+                        Rectangle {
+                            background: #2a1b0a;
+                            border-color: #e5a50a;
+                            border-width: 1px;
+                            border-radius: 6px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                Text {
+                                    text: "BENCH TEST ONLY: Open-source firmware must NOT be installed anywhere OTHER than a current-limited bench power supply (<= 1.0A). Do not ride on a bicycle. Provided AS IS with NO WARRANTY. Any equipment damage is solely your own responsibility.";
+                                    font-size: 11px;
+                                    color: #f6d32d;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -645,43 +689,101 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Card 2: Lockout Analysis & Offline Patching
-                AdwCard {
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
+                HorizontalLayout {
+                    spacing: 16px;
 
-                        Text {
-                            text: "Display Lockout Analysis & Clean Patcher";
-                            font-size: 15px;
-                            font-weight: 700;
-                            color: #ffffff;
-                        }
+                    // Left Card: Lockout Gate Analysis & Patcher
+                    AdwCard {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
 
-                        Text {
-                            text: "Neutralizes all 6 restriction branch gates (ARM Thumb NOP 0x00BF) introduced in post-October 2024 factory firmware (T24V, T154, LCD135C, M15). Restores speed limit configuration up to 60 km/h, enables 12-32 inch wheel sizing, unlocks engineering menus, and enables throttle assist without modifying graphics or calibration tables.";
-                            font-size: 12px;
-                            color: #9a9996;
-                            wrap: word-wrap;
-                        }
+                            Text {
+                                text: "Lockout Gate Analysis & Patcher";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: #ffffff;
+                            }
 
-                        HorizontalLayout {
-                            alignment: space-between;
-                            VerticalLayout {
-                                alignment: center;
+                            Rectangle {
+                                height: 48px;
+                                clip: true;
                                 Text {
-                                    text: root.display-is-locked ?
-                                        "Click to generate an unlocked, restriction-free Intel HEX file." :
-                                        (root.display-hex-path != "" ? "Firmware has no active lockout restrictions." : "Select a firmware file above to inspect and patch.");
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: root.display-is-locked ? #e5a50a : #9a9996;
+                                    width: 100%;
+                                    height: 100%;
+                                    text: "Neutralizes all 6 restriction branch gates (ARM Thumb NOP 0x00BF) introduced in post-October 2024 factory firmware. Restores speed limit configuration up to 60 km/h, enables 12-32 inch wheel sizing, and unlocks menus.";
+                                    font-size: 11px;
+                                    color: #9a9996;
+                                    wrap: word-wrap;
+                                    vertical-alignment: top;
                                 }
                             }
-                            AdwButton {
-                                text: "Save Patched .hex...";
-                                enabled: root.display-hex-path != "";
-                                clicked => { root.export-patched-display-hex(root.display-hex-path); }
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: root.display-is-locked ?
+                                            "Locked gates detected." :
+                                            (root.display-hex-path != "" ? "No active restrictions." : "Select firmware above.");
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: root.display-is-locked ? #e5a50a : #9a9996;
+                                    }
+                                }
+                                AdwButton {
+                                    text: "Save Patched .hex...";
+                                    enabled: root.display-hex-path != "";
+                                    clicked => { root.export-patched-display-hex(root.display-hex-path); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right Card: Display ISP Flashing Options & Instructions
+                    AdwCard {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            Text {
+                                text: "MegaHunt USB ISP Bootloader";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: #ffffff;
+                            }
+
+                            Rectangle {
+                                height: 48px;
+                                clip: true;
+                                Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: "Connect display to PC via USB-C. Power off the display, hold the Power or 'M' button while connecting to trigger MegaHunt ISP mode (MH2020C / MH1903 bootloader). Flasher verifies ACK frames and sector pacing automatically.";
+                                    font-size: 11px;
+                                    color: #9a9996;
+                                    wrap: word-wrap;
+                                    vertical-alignment: top;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: start;
+                                min-height: 34px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    CheckBox {
+                                        text: "Auto-Unlock on Flash (neutralizes 6 restriction gates)";
+                                        checked <=> root.display-auto-unlock;
+                                    }
+                                }
                             }
                         }
                     }
@@ -694,7 +796,7 @@ export component MainWindow inherits Window {
                         spacing: 14px;
 
                         Text {
-                            text: "USB Display ISP Flasher";
+                            text: "Display Firmware Flasher";
                             font-size: 15px;
                             font-weight: 700;
                             color: #ffffff;
@@ -719,13 +821,6 @@ export component MainWindow inherits Window {
                                 current-value <=> root.selected-display-port;
                                 width: 380px;
                             }
-                            VerticalLayout {
-                                alignment: center;
-                                CheckBox {
-                                    text: "Auto-Unlock on Flash (neutralizes 6 lockout gates)";
-                                    checked <=> root.display-auto-unlock;
-                                }
-                            }
                         }
 
                         HorizontalLayout {
@@ -742,7 +837,7 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            // Dedicated side-by-side action buttons
+                            // Dedicated side-by-side action buttons matching Controller window
                             HorizontalLayout {
                                 spacing: 10px;
 
@@ -760,7 +855,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 AdwButton {
-                                    text: "Flash Display Firmware";
+                                    text: "Flash Firmware";
                                     primary: true;
                                     enabled: !root.display-is-flashing && root.display-hex-path != "";
                                     clicked => {
@@ -777,6 +872,25 @@ export component MainWindow inherits Window {
 
                         ProgressIndicator {
                             progress: root.display-progress;
+                        }
+
+                        Rectangle {
+                            background: #2a1b0a;
+                            border-color: #e5a50a;
+                            border-width: 1px;
+                            border-radius: 6px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                Text {
+                                    text: "DISCLAIMER: Provided AS IS with NO WARRANTY. Flashing firmware carries inherent risk. Any damage to your display, controller, battery, wiring, or bike is entirely your own responsibility.";
+                                    font-size: 11px;
+                                    color: #f6d32d;
+                                    wrap: word-wrap;
+                                }
+                            }
                         }
                     }
                 }

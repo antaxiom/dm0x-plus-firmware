@@ -142,3 +142,106 @@ fn test_source_level_tuning_customizations() {
         "Commuter profile with unified ceiling must respect assist level ceiling"
     );
 }
+
+#[test]
+fn test_gear_safe_nylon_protection_vs_uncapped_stall_torque() {
+    let mut torque_stock = TorqueSensorState::new(750, 3000, 50);
+    let mut torque_gearsafe = TorqueSensorState::new(750, 3000, 50);
+    let mut torque_uncapped = TorqueSensorState::new(750, 3000, 50);
+
+    let stock_profile = TuningProfile::stock_v6510c();
+    let gearsafe_profile = TuningProfile::gear_safe_trail();
+    let uncapped_profile = TuningProfile::uncapped_cadence();
+
+    let pedal_mv = 3000;
+    let strength = 10;
+    let eassist = 100;
+    let mode_max = 300; // 30A Sport
+    let global_ceil = 300;
+    let level_ceil = 300;
+
+    // At 10 RPM (low-speed hill climbing):
+    // Uncapped delivers 100% torque assist (300 dA = 30.0 A), creating massive stall torque that
+    // can strip the factory blue nylon reduction gear.
+    // Gear-safe profile provides a gentle, protected assist floor (~20-40%), preventing gear tooth fracture!
+    let uncapped_10 = torque_uncapped.compute_current_da_with_profile(
+        pedal_mv,
+        10,
+        0,
+        strength,
+        eassist,
+        5,
+        mode_max,
+        global_ceil,
+        level_ceil,
+        &uncapped_profile,
+    );
+    let gearsafe_10 = torque_gearsafe.compute_current_da_with_profile(
+        pedal_mv,
+        10,
+        0,
+        strength,
+        eassist,
+        5,
+        mode_max,
+        global_ceil,
+        level_ceil,
+        &gearsafe_profile,
+    );
+    let stock_10 = torque_stock.compute_current_da_with_profile(
+        pedal_mv,
+        10,
+        0,
+        strength,
+        eassist,
+        5,
+        mode_max,
+        global_ceil,
+        level_ceil,
+        &stock_profile,
+    );
+
+    assert_eq!(uncapped_10, 300, "Uncapped delivers full current at 10 RPM");
+    assert!(
+        gearsafe_10 < uncapped_10,
+        "Gear-safe profile must significantly reduce current at 10 RPM to protect nylon gears"
+    );
+    assert!(
+        gearsafe_10 >= stock_10,
+        "Gear-safe profile still maintains adequate climbing assistance"
+    );
+
+    // At 35 RPM: Gear-safe profile ramps to full 100% assist, outperforming sluggish stock 60 RPM curve
+    let gearsafe_35 = torque_gearsafe.compute_current_da_with_profile(
+        pedal_mv,
+        35,
+        0,
+        strength,
+        eassist,
+        5,
+        mode_max,
+        global_ceil,
+        level_ceil,
+        &gearsafe_profile,
+    );
+    let stock_35 = torque_stock.compute_current_da_with_profile(
+        pedal_mv,
+        35,
+        0,
+        strength,
+        eassist,
+        5,
+        mode_max,
+        global_ceil,
+        level_ceil,
+        &stock_profile,
+    );
+    assert_eq!(
+        gearsafe_35, 300,
+        "Gear-safe profile reaches 100% assist by 35 RPM"
+    );
+    assert!(
+        gearsafe_35 > stock_35,
+        "Gear-safe profile provides more assistance than stock at 35 RPM (35/60 = 58%)"
+    );
+}

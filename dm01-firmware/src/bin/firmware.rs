@@ -121,6 +121,8 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
 
     let mut sensors = Dm01SensorsHardware::new();
     sensors.init_hardware();
+    // 3a. Perform 256-sample startup shunt auto-zero calibration (matching V6510C at 0x08009A6C)
+    sensors.calibrate_shunts();
 
     // 4. Configure SysTick Timer for 1 ms deterministic tick at 72 MHz (72,000 clock cycles)
     HardwarePeripherals::init_systick(72_000);
@@ -128,11 +130,17 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     // 5. Initialize Hardware Watchdog (IWDG) with 500 ms safety trip window
     HardwarePeripherals::init_iwdg(500);
 
-    // 6. Initialize Motor Controller State Machine, Hall+PLL Observer, and FOC Loop
-    let config = MotorConfig::default_dm01();
+    // 6. Initialize Motor Controller State Machine (load from Flash Page 127 if available)
+    let mut config = MotorConfig::default_dm01();
+    if let Some(flash_img) = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() } {
+        config.apply_eeprom_image(&flash_img);
+    }
     let angle_offset_deg = config.motor_hw.angle_offset_deg;
     let foc_cfg = config.foc_config;
-    let mut controller = Dm01Controller::new(config);
+    let mut controller = Dm01Controller::with_tuning(
+        config,
+        dm01_firmware::tuning::TuningProfile::gear_safe_trail(),
+    );
     let mut observer = HallPllObserver::new();
     let mut foc = FocCurrentLoop::new(Dm01PwmHardware::DEFAULT_ARR);
     foc.configure_from_foc_menu(&foc_cfg);
@@ -189,11 +197,12 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
             telemetry_tick += 1;
             if telemetry_tick >= 50 {
                 telemetry_tick = 0;
+                let eff_speed = controller.effective_wheel_speed_deci_kph(&inputs);
                 let frame = TelemetryFrame {
                     battery_voltage_deci_v: (inputs.battery_voltage_mv / 100) as u16,
                     battery_soc_percent: 100,
                     phase_current_deci_a: (current_target_ma.max(0) as u32 / 100) as u16,
-                    wheel_speed_deci_kph: inputs.wheel_speed_deci_kph,
+                    wheel_speed_deci_kph: eff_speed,
                     cadence_rpm: inputs.cadence_rpm,
                     torque_sensor_mv: inputs.torque_adc_mv,
                     throttle_mv: inputs.throttle_adc_mv,

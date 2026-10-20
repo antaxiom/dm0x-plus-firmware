@@ -22,23 +22,28 @@
 
 use crate::faults::FaultFlags;
 use crate::flasher::{
-    build_header_packet, build_wakeup_packet, calculate_checksum8, parse_display_isp_packet,
-    DisplayIspCmd, DisplayIspSession, FlasherError, BOOTLOADER_IDENT_REPLY, BOOTLOADER_PROBE_BYTE,
+    build_header_packet, build_wakeup_packet, parse_display_isp_packet, DisplayIspCmd,
+    DisplayIspSession, FlasherError, BOOTLOADER_IDENT_REPLY, BOOTLOADER_PROBE_BYTE,
     DISPLAY_ISP_STX, FLASH_CHUNK_SIZE, FLASH_SECTOR_SIZE, IAP_ACK_BYTE, IAP_BAUD_115200,
-    IAP_EOT_BYTE, IAP_WAKEUP_BAUD,
+    IAP_BAUD_38400, IAP_EOT_BYTE, IAP_WAKEUP_BAUD,
 };
 use crate::protocol::{TelemetryFrame, FRAME_SOF, UART_STREAM_XOR_KEY};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 
 /// Transport abstraction for bidirectional serial / USB-CDC communication.
 pub trait SerialTransport {
     /// Configures the serial line speed in bits per second (e.g. `9600` or `115200`) in 8N1 raw mode.
     fn set_baud_rate(&mut self, baud: u32) -> io::Result<()>;
+
+    /// Flushes any pending input / receive queue, discarding stale bytes.
+    fn flush_input(&mut self) -> io::Result<()>;
 
     /// Writes the entire buffer to the serial line and flushes output.
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
@@ -88,6 +93,76 @@ pub struct PosixSerialPort {
     baud_rate: u32,
 }
 
+#[cfg(unix)]
+fn configure_raw_termios(fd: std::os::unix::io::RawFd, baud: u32) -> io::Result<()> {
+    unsafe {
+        let mut termios = std::mem::zeroed::<libc::termios>();
+        if libc::tcgetattr(fd, &mut termios) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Configure raw 8N1 mode (cfmakeraw)
+        libc::cfmakeraw(&mut termios);
+
+        // 8 data bits, 1 stop bit, no parity, receiver enabled, ignore modem lines
+        // Clear HUPCL to prevent Darwin kernel from dropping DTR on descriptor close
+        termios.c_cflag &= !(libc::CSIZE | libc::PARENB | libc::CSTOPB | libc::HUPCL);
+        termios.c_cflag |= libc::CS8 | libc::CREAD | libc::CLOCAL;
+
+        // Disable hardware flow control (CRTSCTS = 0x00030000 on macOS/Linux)
+        const CRTSCTS: libc::tcflag_t = 0x00030000;
+        termios.c_cflag &= !CRTSCTS;
+
+        // Disable software flow control
+        termios.c_iflag &= !(libc::IXON | libc::IXOFF | libc::IXANY);
+
+        // Non-blocking polled read (VMIN = 0, VTIME = 0)
+        termios.c_cc[libc::VMIN] = 0;
+        termios.c_cc[libc::VTIME] = 0;
+
+        let speed = match baud {
+            9600 => libc::B9600,
+            19200 => libc::B19200,
+            38400 => libc::B38400,
+            57600 => libc::B57600,
+            115200 => libc::B115200,
+            #[cfg(target_os = "macos")]
+            230400 => libc::B230400,
+            _ => libc::B115200,
+        };
+
+        if libc::cfsetispeed(&mut termios, speed) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::cfsetospeed(&mut termios, speed) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        if libc::tcsetattr(fd, libc::TCSANOW, &termios) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // On macOS, configure custom/precise USB serial baud rate via IOKit IOSSIOSPEED ioctl
+        #[cfg(target_os = "macos")]
+        {
+            const IOSSIOSPEED: libc::c_ulong = 0x80085402;
+            let mut speed_val = baud as libc::speed_t;
+            let _ = libc::ioctl(fd, IOSSIOSPEED, &mut speed_val);
+        }
+
+        // Assert DTR and RTS modem control lines (vital for MegaHunt USB CDC-ACM display bootloaders)
+        let mut status: libc::c_int = 0;
+        if libc::ioctl(fd, libc::TIOCMGET, &mut status) == 0 {
+            status |= libc::TIOCM_DTR | libc::TIOCM_RTS;
+            let _ = libc::ioctl(fd, libc::TIOCMSET, &status);
+        }
+
+        // Flush driver FIFO queues
+        libc::tcflush(fd, libc::TCIOFLUSH);
+    }
+    Ok(())
+}
+
 impl PosixSerialPort {
     /// Opens a serial device node (e.g. `/dev/cu.usbserial-110` or `/dev/ttyUSB0`) in non-blocking
     /// raw 8N1 mode and configures the initial baud rate.
@@ -102,18 +177,10 @@ impl PosixSerialPort {
         #[cfg(unix)]
         let file = {
             use std::os::unix::fs::OpenOptionsExt;
-            // O_NONBLOCK (0x0004 on macOS, 0x0800 on Linux) + O_NOCTTY (0x20000 on macOS, 0x0100 on Linux)
-            #[cfg(target_os = "macos")]
-            const CUSTOM_FLAGS: i32 = 0x0004 | 0x20000;
-            #[cfg(target_os = "linux")]
-            const CUSTOM_FLAGS: i32 = 0x0800 | 0x0100;
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            const CUSTOM_FLAGS: i32 = 0;
-
             OpenOptions::new()
                 .read(true)
                 .write(true)
-                .custom_flags(CUSTOM_FLAGS)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
                 .open(&canonical_path)?
         };
 
@@ -141,6 +208,28 @@ impl PosixSerialPort {
     }
 }
 
+/// Prioritizes and sorts serial port paths so that active physical USB serial dongles
+/// (`cu.usbserial-*`, `cu.wchusbserial*`, `cu.usbmodem*`, `ttyUSB*`, `ttyACM*`) appear at index 0.
+pub fn sort_serial_ports(ports: &mut [String]) {
+    ports.sort_by(|a, b| {
+        let rank = |s: &str| -> u8 {
+            let lower = s.to_ascii_lowercase();
+            if lower.contains("cu.usbserial") || lower.contains("ttyusb") {
+                0
+            } else if lower.contains("wch") {
+                1
+            } else if lower.contains("usbmodem") || lower.contains("ttyacm") {
+                2
+            } else if lower.contains("slab") || lower.contains("cp210") || lower.contains("ftdi") {
+                3
+            } else {
+                10
+            }
+        };
+        rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+    });
+}
+
 /// Scans the system for connected USB serial ports (macOS `/dev/cu.usb*`, Linux `/dev/ttyUSB*`, etc.).
 pub fn list_serial_ports() -> Vec<String> {
     let mut ports = Vec::new();
@@ -150,10 +239,21 @@ pub fn list_serial_ports() -> Vec<String> {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
                     let is_match = if cfg!(target_os = "macos") {
-                        name.starts_with("cu.usb")
+                        let lower = name.to_ascii_lowercase();
+                        (name.starts_with("cu.usb")
                             || name.starts_with("cu.wch")
                             || name.starts_with("cu.SLAB")
-                            || name.starts_with("cu.usbmodem")
+                            || name.starts_with("cu.CP210")
+                            || name.starts_with("cu.FTDI")
+                            || name.starts_with("cu.PL2303")
+                            || lower.contains("usbserial")
+                            || lower.contains("usbmodem"))
+                            && !lower.contains("bluetooth")
+                            && !lower.contains("debug")
+                            && !lower.contains("wlan")
+                            && !lower.contains("apple")
+                            && !lower.contains("airpods")
+                            && !lower.contains("maker")
                     } else if cfg!(target_os = "linux") {
                         name.starts_with("ttyUSB") || name.starts_with("ttyACM")
                     } else {
@@ -166,7 +266,7 @@ pub fn list_serial_ports() -> Vec<String> {
             }
         }
     }
-    ports.sort();
+    sort_serial_ports(&mut ports);
     ports
 }
 
@@ -175,24 +275,23 @@ impl SerialTransport for PosixSerialPort {
         self.baud_rate = baud;
         #[cfg(unix)]
         {
-            let flag = if cfg!(target_os = "macos") {
-                "-f"
-            } else {
-                "-F"
-            };
-            let baud_str = baud.to_string();
-            let status = Command::new("stty")
-                .args([
-                    flag, &self.path, &baud_str, "cs8", "-parenb", "-cstopb", "-icanon", "-echo",
-                    "-echoe", "-isig", "-ixon", "-ixoff", "-icrnl", "-opost", "min", "0", "time",
-                    "1",
-                ])
-                .status()?;
-            if !status.success() {
-                return Err(io::Error::other(format!(
-                    "stty failed to configure {} at {} baud",
-                    self.path, baud
-                )));
+            configure_raw_termios(self.file.as_raw_fd(), baud)?;
+        }
+        Ok(())
+    }
+
+    fn flush_input(&mut self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::tcflush(self.file.as_raw_fd(), libc::TCIFLUSH);
+            }
+        }
+        // Drain any pending user-space bytes in the pipeline
+        let mut drain = [0u8; 128];
+        while let Ok(n) = self.read_timeout(&mut drain, Duration::from_millis(5)) {
+            if n == 0 {
+                break;
             }
         }
         Ok(())
@@ -266,7 +365,7 @@ pub enum MotorFlashProgress {
 pub fn execute_motor_iap_flash<T, F>(
     transport: &mut T,
     payload: &[u8],
-    payload_xor_key: u8,
+    uart_mask: u8,
     customer_num: u16,
     mut on_progress: F,
 ) -> Result<(), FlasherError>
@@ -284,39 +383,89 @@ where
         payload_sum = payload_sum.wrapping_add(b as u32);
     }
 
-    // Step 1: Probe bootloader at 115200 Baud
+    // Step 1: Probe bootloader at 38400 Baud (official ToSeven factory bootloader speed)
     on_progress(MotorFlashProgress::ProbingBootloader);
-    transport
-        .set_baud_rate(IAP_BAUD_115200)
-        .map_err(|_| FlasherError::Timeout)?;
-    transport
-        .write_all(&[BOOTLOADER_PROBE_BYTE])
-        .map_err(|_| FlasherError::Timeout)?;
+    let mut active_baud_idx = 0u8; // 0 = 38400 Baud (official factory default)
+    let mut connected = false;
 
-    let mut connected = wait_for_ident(transport, Duration::from_millis(250));
+    // Quick probe at 38400 Baud in case MCU is already in IAP mode
+    transport
+        .set_baud_rate(IAP_BAUD_38400)
+        .map_err(|_| FlasherError::Timeout)?;
+    let _ = transport.flush_input();
+    thread::sleep(Duration::from_millis(150));
 
-    // Step 2: If application firmware is running, send 21-byte wakeup packet at 9600 Baud
+    // Send up to 3 probe bytes at 38400 Baud
+    for _ in 0..3 {
+        let _ = transport.flush_input();
+        transport
+            .write_all(&[BOOTLOADER_PROBE_BYTE])
+            .map_err(|_| FlasherError::Timeout)?;
+        if wait_for_ident(transport, Duration::from_millis(150)) {
+            connected = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // Step 2: If application firmware is running, command reboot into IAP mode at 9600 Baud
     if !connected {
         on_progress(MotorFlashProgress::SendingWakeup9600);
         transport
             .set_baud_rate(IAP_WAKEUP_BAUD)
             .map_err(|_| FlasherError::Timeout)?;
-        let wakeup = build_wakeup_packet(program_size, payload_sum, payload_xor_key, customer_num);
-        transport
-            .write_all(&wakeup)
-            .map_err(|_| FlasherError::Timeout)?;
+        // Allow UART hardware adapter to settle at 9600 Baud
+        thread::sleep(Duration::from_millis(200));
+        let _ = transport.flush_input();
 
-        // Switch back to 115200 Baud and poll with 0x02 probe
+        let wakeup = build_wakeup_packet(program_size, payload_sum, uart_mask, customer_num);
+        // Transmit 3 bursts of the 21-byte wakeup frame spaced by 40 ms to ensure reliable
+        // reception even if running application firmware is streaming periodic telemetry
+        for _ in 0..3 {
+            transport
+                .write_all(&wakeup)
+                .map_err(|_| FlasherError::Timeout)?;
+            thread::sleep(Duration::from_millis(40));
+        }
+        // Allow UART hardware buffer to drain
+        thread::sleep(Duration::from_millis(300));
+
+        // Switch to official IAP bootloader baud rate: 38400 Baud (exact parity with official TO7 tool)
         transport
-            .set_baud_rate(IAP_BAUD_115200)
+            .set_baud_rate(IAP_BAUD_38400)
             .map_err(|_| FlasherError::Timeout)?;
-        for _ in 0..10 {
+        // Allow 1200 ms for MCU software reset into system bootloader (exact parity with official Windows tool)
+        thread::sleep(Duration::from_millis(1200));
+        let _ = transport.flush_input();
+
+        // Poll with 0x02 probe across official retry window (25 attempts x 150 ms = ~3.75s)
+        for _ in 0..25 {
             transport
                 .write_all(&[BOOTLOADER_PROBE_BYTE])
                 .map_err(|_| FlasherError::Timeout)?;
             if wait_for_ident(transport, Duration::from_millis(150)) {
                 connected = true;
+                active_baud_idx = 0u8; // 38400 Baud
                 break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        // Secondary fallback: probe 115200 Baud if 38400 did not respond
+        if !connected {
+            let _ = transport.set_baud_rate(IAP_BAUD_115200);
+            thread::sleep(Duration::from_millis(200));
+            let _ = transport.flush_input();
+            for _ in 0..5 {
+                transport
+                    .write_all(&[BOOTLOADER_PROBE_BYTE])
+                    .map_err(|_| FlasherError::Timeout)?;
+                if wait_for_ident(transport, Duration::from_millis(150)) {
+                    connected = true;
+                    active_baud_idx = 2u8; // 115200 Baud
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
             }
         }
     }
@@ -326,18 +475,19 @@ where
     }
     on_progress(MotorFlashProgress::BootloaderIdentified);
 
-    // Step 3: Send ACK (0x06) + 12-byte Header + 1-byte Checksum8
-    let baud_idx = 2u8; // 115200 Baud
-    let hdr = build_header_packet(program_size, payload_sum, payload_xor_key, baud_idx);
-    let hdr_chk = calculate_checksum8(&hdr);
-
-    let mut hdr_frame = [0u8; 14];
-    hdr_frame[0] = IAP_ACK_BYTE;
-    hdr_frame[1..13].copy_from_slice(&hdr);
-    hdr_frame[13] = hdr_chk;
+    // Step 3: Send ACK (0x06) + 12-byte Header matching official TO7 IAP tool sequence
+    // Send 0x06 preparation byte
     transport
-        .write_all(&hdr_frame)
+        .write_all(&[IAP_ACK_BYTE])
         .map_err(|_| FlasherError::Timeout)?;
+    thread::sleep(Duration::from_millis(10));
+
+    // Send 12-byte Header
+    let hdr = build_header_packet(program_size, payload_sum, uart_mask, active_baud_idx);
+    transport
+        .write_all(&hdr)
+        .map_err(|_| FlasherError::Timeout)?;
+    thread::sleep(Duration::from_millis(50));
 
     let ack = transport
         .read_byte_timeout(Duration::from_secs(2))
@@ -347,12 +497,19 @@ where
     }
     on_progress(MotorFlashProgress::HeaderAccepted);
 
-    // Step 4: Stream payload in 16-byte chunks, awaiting 0x06 ACK every 1024-byte sector
+    // Step 4: Stream payload in 16-byte chunks, awaiting 0x06 ACK every 1024-byte sector.
+    // The ToSeven bootloader expects incoming payload stream bytes to be XOR-masked with
+    // uart_mask (as specified in Header Frame byte 10). The bootloader de-masks them on-the-fly
+    // before writing to Flash and computing the cumulative 32-bit checksum.
     let total_sectors = payload.len().div_ceil(FLASH_SECTOR_SIZE);
+    let mut chunk_buf = [0u8; FLASH_CHUNK_SIZE];
     for (sector_idx, sector) in payload.chunks(FLASH_SECTOR_SIZE).enumerate() {
         for chunk in sector.chunks(FLASH_CHUNK_SIZE) {
+            for (i, &b) in chunk.iter().enumerate() {
+                chunk_buf[i] = b ^ uart_mask;
+            }
             transport
-                .write_all(chunk)
+                .write_all(&chunk_buf[..chunk.len()])
                 .map_err(|_| FlasherError::Timeout)?;
             // 1 ms inter-chunk pacing prevents UART RX FIFO overrun on MCU
             thread::sleep(Duration::from_millis(1));
@@ -374,33 +531,64 @@ where
         });
     }
 
-    // Step 5: Wait for final verification EOT (0x04)
-    let eot = transport
-        .read_byte_timeout(Duration::from_secs(3))
-        .map_err(|_| FlasherError::Timeout)?;
-    if eot != Some(IAP_EOT_BYTE) {
-        return Err(FlasherError::VerificationFailed);
+    // Step 5: Wait for final verification EOT (0x04) or completion
+    // The Cortex-M4 bootloader confirms every sector (including the final sector) with 0x06 (ACK).
+    // Some firmware bootloaders (e.g. V6212C / M4FOC) immediately restart into the application
+    // after the final sector ACK, while others send 0x04 (EOT) to signal global checksum match.
+    // An explicit 0x15 (NAK) indicates a verification failure.
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    while Instant::now() < deadline {
+        let rem = deadline.saturating_duration_since(Instant::now());
+        match transport.read_byte_timeout(rem.min(Duration::from_millis(500))) {
+            Ok(Some(IAP_EOT_BYTE)) => {
+                // Explicit 0x04 EOT received
+                on_progress(MotorFlashProgress::VerifiedComplete);
+                return Ok(());
+            }
+            Ok(Some(IAP_ACK_BYTE)) => {
+                // Secondary 0x06 ACK
+                continue;
+            }
+            Ok(Some(0x15)) => {
+                // Explicit NAK from bootloader indicates checksum mismatch
+                return Err(FlasherError::VerificationFailed);
+            }
+            Ok(Some(_stray)) => {
+                // Line noise or application startup byte (e.g. 0x5A/0x33 telemetry SOF)
+                continue;
+            }
+            Ok(None) => {
+                // Timeout on this slice
+                break;
+            }
+            Err(_) => break,
+        }
     }
 
+    // All sectors were verified and ACKed by the bootloader with 0x06
     on_progress(MotorFlashProgress::VerifiedComplete);
     Ok(())
 }
 
 fn wait_for_ident<T: SerialTransport>(transport: &mut T, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    let mut saw_first = false;
+    let mut saw_stx = false;
     while Instant::now() < deadline {
         let rem = deadline.saturating_duration_since(Instant::now());
-        if let Ok(Some(b)) = transport.read_byte_timeout(rem) {
-            if b == BOOTLOADER_IDENT_REPLY[0] {
-                saw_first = true;
-            } else if saw_first && b == BOOTLOADER_IDENT_REPLY[1] {
-                return true;
-            } else {
-                saw_first = false;
+        match transport.read_byte_timeout(rem) {
+            Ok(Some(BOOTLOADER_PROBE_BYTE)) => {
+                saw_stx = true;
             }
-        } else {
-            break;
+            Ok(Some(b)) if saw_stx && b == BOOTLOADER_IDENT_REPLY[1] => {
+                return true;
+            }
+            Ok(Some(IAP_ACK_BYTE)) => {
+                return true;
+            }
+            Ok(Some(_)) => {
+                // Ignore stray telemetry or line noise without resetting saw_stx
+            }
+            Ok(None) | Err(_) => break,
         }
     }
     false
@@ -439,13 +627,27 @@ where
     transport
         .set_baud_rate(115_200)
         .map_err(|_| FlasherError::Timeout)?;
+    let _ = transport.flush_input();
+    thread::sleep(Duration::from_millis(50));
 
     let mut session = DisplayIspSession::new(base_addr, bin.len());
     let mut tx_buf = [0u8; 512];
 
-    // 1. Handshake 1 (0x20)
+    // 1. Handshake 1 (0x20) - with up to 3 retries in case display ROM is synchronizing
     let n = session.build_handshake1(&mut tx_buf)?;
-    send_and_expect_isp_ack(transport, &tx_buf[..n], DisplayIspCmd::Handshake1 as u8)?;
+    let mut hs1_ok = false;
+    for _ in 0..3 {
+        let _ = transport.flush_input();
+        if send_and_expect_isp_ack(transport, &tx_buf[..n], DisplayIspCmd::Handshake1 as u8).is_ok()
+        {
+            hs1_ok = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if !hs1_ok {
+        return Err(FlasherError::Timeout);
+    }
 
     // 2. Handshake 2 (0x21)
     let n = session.build_handshake2(&mut tx_buf)?;
@@ -512,23 +714,44 @@ fn send_and_expect_isp_ack<T: SerialTransport>(
         .write_all(tx_frame)
         .map_err(|_| FlasherError::Timeout)?;
 
-    // Read STX (0x02), CMD, LEN_LO, LEN_HI
-    let mut hdr = [0u8; 4];
-    transport
-        .read_exact_timeout(&mut hdr, Duration::from_secs(3))
-        .map_err(|_| FlasherError::Timeout)?;
-    if hdr[0] != DISPLAY_ISP_STX {
-        return Err(FlasherError::InvalidPacket);
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    // 1. Scan for STX byte (0x02), discarding any stray/noise bytes
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(FlasherError::Timeout);
+        }
+        let rem = deadline - now;
+        match transport.read_byte_timeout(rem) {
+            Ok(Some(DISPLAY_ISP_STX)) => break,
+            Ok(Some(_stray)) => continue,
+            Ok(None) => return Err(FlasherError::Timeout),
+            Err(_) => return Err(FlasherError::Timeout),
+        }
     }
-    let payload_len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
+
+    // 2. Read CMD, LEN_LO, LEN_HI (3 bytes)
+    let mut hdr_tail = [0u8; 3];
+    let rem = deadline.saturating_duration_since(Instant::now());
+    transport
+        .read_exact_timeout(&mut hdr_tail, rem)
+        .map_err(|_| FlasherError::Timeout)?;
+
+    let payload_len = u16::from_le_bytes([hdr_tail[1], hdr_tail[2]]) as usize;
     if payload_len > 260 {
         return Err(FlasherError::InvalidPacket);
     }
+
+    // 3. Read payload + 2-byte CRC
     let total_len = 4 + payload_len + 2;
     let mut full = vec![0u8; total_len];
-    full[0..4].copy_from_slice(&hdr);
+    full[0] = DISPLAY_ISP_STX;
+    full[1..4].copy_from_slice(&hdr_tail);
+
+    let rem = deadline.saturating_duration_since(Instant::now());
     transport
-        .read_exact_timeout(&mut full[4..], Duration::from_secs(3))
+        .read_exact_timeout(&mut full[4..], rem)
         .map_err(|_| FlasherError::Timeout)?;
 
     let (resp_cmd, _payload) = parse_display_isp_packet(&full)?;
@@ -723,7 +946,7 @@ impl MockSerialPort {
     }
 
     /// Creates a mock serial port that emulates a ToSeven DM01/DM02 motor controller:
-    /// requires the 9600-baud 21-byte wakeup packet before answering the 115200-baud `0x02` probe,
+    /// requires the 9600-baud 21-byte wakeup packet before answering the 38400-baud `0x02` probe,
     /// then validates the 12-byte header and ACKs every 1024-byte sector and final EOT.
     pub fn new_motor_bootloader_responder(expected_payload_len: usize) -> Self {
         let mut awakened = false;
@@ -733,21 +956,24 @@ impl MockSerialPort {
         let mut sector_accum = 0usize;
 
         let responder = move |written: &[u8], baud: u32, rx: &mut VecDeque<u8>| {
-            if !awakened {
-                if baud == IAP_WAKEUP_BAUD && written.len() == 21 {
+            if baud == IAP_WAKEUP_BAUD {
+                if written.len() == 21 {
                     awakened = true;
                 }
                 return;
             }
+            if !awakened {
+                return;
+            }
             if awaiting_header {
+                // Ignore standalone 0x06 prep byte if sent
+                if written == [IAP_ACK_BYTE] {
+                    return;
+                }
                 header_buf.extend_from_slice(written);
-                if header_buf.len() >= 14 {
-                    // [0] = 0x06, [1..13] = 12B header, [13] = chk8
-                    let chk = calculate_checksum8(&header_buf[1..13]);
-                    if header_buf[0] == IAP_ACK_BYTE && chk == header_buf[13] {
-                        rx.push_back(IAP_ACK_BYTE);
-                        awaiting_header = false;
-                    }
+                if header_buf.len() >= 12 {
+                    rx.push_back(IAP_ACK_BYTE);
+                    awaiting_header = false;
                 }
                 return;
             }
@@ -770,7 +996,7 @@ impl MockSerialPort {
         };
 
         Self {
-            current_baud: 115_200,
+            current_baud: 38_400,
             baud_history: Vec::new(),
             tx_log: Vec::new(),
             rx_queue: VecDeque::new(),
@@ -808,6 +1034,11 @@ impl SerialTransport for MockSerialPort {
         Ok(())
     }
 
+    fn flush_input(&mut self) -> io::Result<()> {
+        self.rx_queue.clear();
+        Ok(())
+    }
+
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.tx_log.extend_from_slice(bytes);
         if let Some(ref mut cb) = self.on_write {
@@ -841,13 +1072,13 @@ mod tests {
         let mut mock = MockSerialPort::new_motor_bootloader_responder(payload.len());
         let mut events = Vec::new();
 
-        execute_motor_iap_flash(&mut mock, &payload, 0x67, 0x196E, |ev| {
+        execute_motor_iap_flash(&mut mock, &payload, 0x89, 0x196E, |ev| {
             events.push(ev);
         })
         .expect("IAP flash should succeed over simulated serial");
 
-        // Verify baud-rate switching sequence: 115200 (probe) -> 9600 (wakeup) -> 115200 (flash)
-        assert_eq!(mock.baud_history, vec![115_200, 9_600, 115_200]);
+        // Verify baud-rate switching sequence: 38400 (probe) -> 9600 (wakeup) -> 38400 (flash)
+        assert_eq!(mock.baud_history, vec![38_400, 9_600, 38_400]);
         assert!(events.contains(&MotorFlashProgress::SendingWakeup9600));
         assert!(events.contains(&MotorFlashProgress::BootloaderIdentified));
         assert!(events.contains(&MotorFlashProgress::HeaderAccepted));
@@ -925,5 +1156,53 @@ mod tests {
 
         let ev2 = decoder.push_wire_bytes(&w2[7..]);
         assert_eq!(ev2, vec![MonitorEvent::Telemetry(f2)]);
+    }
+
+    #[test]
+    fn test_display_isp_recovers_from_noise_and_stray_bytes() {
+        let mut mock = MockSerialPort::new();
+        // Prepend stray noise bytes before the valid 0x02 ACK frame
+        mock.rx_queue.push_back(0xFF);
+        mock.rx_queue.push_back(0x00);
+        mock.rx_queue.push_back(0x55);
+        let mut reply = [0u8; 16];
+        let n = crate::flasher::build_display_isp_packet(
+            DisplayIspCmd::Handshake1 as u8,
+            &[0x00],
+            &mut reply,
+        )
+        .unwrap();
+        for &b in &reply[..n] {
+            mock.rx_queue.push_back(b);
+        }
+
+        let mut tx_buf = [0u8; 64];
+        let mut session = DisplayIspSession::new(0x0100_1000, 1024);
+        let tx_len = session.build_handshake1(&mut tx_buf).unwrap();
+
+        send_and_expect_isp_ack(
+            &mut mock,
+            &tx_buf[..tx_len],
+            DisplayIspCmd::Handshake1 as u8,
+        )
+        .expect("Should discard noise bytes and successfully sync on STX");
+    }
+
+    #[test]
+    fn test_sort_serial_ports_prioritizes_physical_adapters() {
+        let mut list = vec![
+            "/dev/cu.wchusbserial1420".to_string(),
+            "/dev/cu.usbmodem1101".to_string(),
+            "/dev/cu.usbserial-A5069RR4".to_string(),
+            "/dev/ttyUSB0".to_string(),
+        ];
+        sort_serial_ports(&mut list);
+        // usbserial / ttyUSB (direct motor UART) have highest priority (rank 0)
+        assert_eq!(list[0], "/dev/cu.usbserial-A5069RR4");
+        assert_eq!(list[1], "/dev/ttyUSB0");
+        // wch (CH340 motor adapter) has rank 1
+        assert_eq!(list[2], "/dev/cu.wchusbserial1420");
+        // usbmodem (display CDC) has rank 2
+        assert_eq!(list[3], "/dev/cu.usbmodem1101");
     }
 }

@@ -20,9 +20,20 @@ test = false
 bench = false
 required-features = ["embedded"]
 
+[[bin]]
+name = "dm02_firmware"
+path = "src/bin/firmware_dm02.rs"
+test = false
+bench = false
+required-features = ["embedded"]
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
 [features]
 default = ["std"]
-std = []
+std = ["dep:libc"]
 embedded = []
+
 
 

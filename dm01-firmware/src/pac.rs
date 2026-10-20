@@ -183,6 +183,29 @@ pub struct IwdgRegisters {
     pub sr: VolatileReg<u32>,  // +0x0C: Status register
 }
 
+/// STM32/GD32 embedded Flash memory controller register layout.
+#[repr(C)]
+pub struct FlashRegisters {
+    pub acr: VolatileReg<u32>,     // +0x00: Access control register
+    pub keyr: VolatileReg<u32>,    // +0x04: Key register (unlock sequence: 0x45670123, 0xCDEF89AB)
+    pub optkeyr: VolatileReg<u32>, // +0x08: Option byte key register
+    pub sr: VolatileReg<u32>, // +0x0C: Status register (BSY=bit 0, PGERR=bit 2, WRPRTERR=bit 4, EOP=bit 5)
+    pub cr: VolatileReg<u32>, // +0x10: Control register (PG=bit 0, PER=bit 1, MER=bit 2, STRT=bit 6, LOCK=bit 7)
+    pub ar: VolatileReg<u32>, // +0x14: Address register (page erase address)
+    pub _reserved: u32,       // +0x18
+    pub obr: VolatileReg<u32>, // +0x1C: Option byte register
+    pub wrpr: VolatileReg<u32>, // +0x20: Write protection register
+}
+
+/// Error conditions encountered during embedded Flash controller operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashError {
+    /// Flash memory page is write-protected (`WRPRTERR`).
+    WriteProtection,
+    /// Flash programming or erase alignment fault (`PGERR`).
+    ProgrammingError,
+}
+
 /// Hardware pointer accessors returning shared references to volatile register blocks.
 pub struct HardwarePeripherals;
 
@@ -311,6 +334,109 @@ impl HardwarePeripherals {
             }
             usart.dr.write(b as u32);
         }
+    }
+
+    #[inline(always)]
+    pub fn flash() -> &'static FlashRegisters {
+        unsafe { &*(FLASH_BASE_REG as *const FlashRegisters) }
+    }
+
+    /// Flash unlock key 1 matching STM32/GD32 hardware (`0x45670123`).
+    pub const FLASH_KEY1: u32 = 0x4567_0123;
+    /// Flash unlock key 2 matching STM32/GD32 hardware (`0xCDEF89AB`).
+    pub const FLASH_KEY2: u32 = 0xCDEF_89AB;
+
+    /// Unlocks the Flash memory controller if locked.
+    pub fn flash_unlock() {
+        let flash = Self::flash();
+        if (flash.cr.read() & (1 << 7)) != 0 {
+            flash.keyr.write(Self::FLASH_KEY1);
+            flash.keyr.write(Self::FLASH_KEY2);
+        }
+    }
+
+    /// Locks the Flash memory controller.
+    pub fn flash_lock() {
+        let flash = Self::flash();
+        flash.cr.modify(|v| v | (1 << 7));
+    }
+
+    /// Erases a Flash page (e.g. Page 127 at `0x0801_FC00`).
+    pub fn flash_erase_page(page_addr: u32) -> Result<(), FlashError> {
+        let flash = Self::flash();
+        Self::flash_unlock();
+
+        // Wait while BSY
+        while (flash.sr.read() & 1) != 0 {
+            core::hint::spin_loop();
+        }
+
+        // Clear any previous error flags (EOP=bit 5, WRPRTERR=bit 4, PGERR=bit 2)
+        flash.sr.write((1 << 5) | (1 << 4) | (1 << 2));
+
+        // Set PER bit (bit 1) and specify page address in AR
+        flash.cr.write(1 << 1);
+        flash.ar.write(page_addr);
+        // Set STRT bit (bit 6) to begin erase
+        flash.cr.modify(|v| v | (1 << 6));
+
+        // Wait while BSY
+        while (flash.sr.read() & 1) != 0 {
+            core::hint::spin_loop();
+        }
+
+        let sr = flash.sr.read();
+        flash.cr.write(0); // Clear PER
+        Self::flash_lock();
+
+        if (sr & (1 << 4)) != 0 {
+            Err(FlashError::WriteProtection)
+        } else if (sr & (1 << 2)) != 0 {
+            Err(FlashError::ProgrammingError)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Programs a buffer of 16-bit halfwords to Flash at `dest_addr`.
+    pub fn flash_write_halfwords(dest_addr: u32, data: &[u16]) -> Result<(), FlashError> {
+        let flash = Self::flash();
+        Self::flash_unlock();
+
+        for (idx, &hw) in data.iter().enumerate() {
+            // Wait while BSY
+            while (flash.sr.read() & 1) != 0 {
+                core::hint::spin_loop();
+            }
+
+            // Set PG bit (bit 0)
+            flash.cr.write(1 << 0);
+
+            let target = (dest_addr as usize + idx * 2) as *mut u16;
+            unsafe {
+                write_volatile(target, hw);
+            }
+
+            // Wait while BSY
+            while (flash.sr.read() & 1) != 0 {
+                core::hint::spin_loop();
+            }
+
+            let sr = flash.sr.read();
+            if (sr & ((1 << 4) | (1 << 2))) != 0 {
+                flash.cr.write(0);
+                Self::flash_lock();
+                return if (sr & (1 << 4)) != 0 {
+                    Err(FlashError::WriteProtection)
+                } else {
+                    Err(FlashError::ProgrammingError)
+                };
+            }
+        }
+
+        flash.cr.write(0);
+        Self::flash_lock();
+        Ok(())
     }
 
     /// Polls whether a byte is waiting in the USART3 receive data register (RXNE, bit 5).

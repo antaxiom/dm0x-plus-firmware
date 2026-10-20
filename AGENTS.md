@@ -26,11 +26,11 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
   - [`src/stock.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/stock.rs) — Pinned SHA-256 registry of known official factory `.Pack` releases.
   - [`src/sha256.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sha256.rs) — Dependency-free `#![no_std]` SHA-256 digest engine.
   - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs) — High-level controller state machines.
-  - [`src/flasher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/flasher.rs) — Motor controller IAP flashing state machine, 21-byte wakeup packet encoder (`0xC9, 0x77`, 7-bit BE, CRC-16, `0x69` wire cipher), 12-byte header frame builder, 16-byte chunk / 1 KB sector pacing, and MegaHunt display ISP framing & session state machine (`0x02`, CMD, len, CRC-16-CCITT).
+  - [`src/flasher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/flasher.rs) — Motor controller IAP flashing state machine (38400 Baud factory bootloader default with 115200 fallback, 21-byte wakeup packet encoder at 9600 Baud with `uart_mask` nibbles, separated `0x06` prep + 12-byte header frame builder with `uart_mask`, 16-byte chunk with Tier 2 wire stream XOR cipher `b ^ uart_mask`, 1 KB sector pacing, and Step 5 EOT `0x04` / NAK `0x15` verification), and MegaHunt display ISP framing & session state machine (`0x02`, CMD, len, CRC-16-CCITT).
+  - [`src/serial.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/serial.rs) — Native POSIX termios serial transport with macOS `IOSSIOSPEED` ioctl, hardware line assertions (`DTR`/`RTS`), non-blocking carrier handling, live IAP/ISP session execution, and comprehensive `/dev/cu.*` adapter enumeration.
   - [`src/display_patcher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/display_patcher.rs) — Display firmware Intel HEX parser, vector table validator, automated 3-gate post-October 2024 lockout detector, and ARM Thumb NOP (`0x00BF`) clean-room patcher for `T24V`, `T154`, `LCD135C`, and `M15`.
-  - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `SCB`).
-  - [`src/hal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/hal.rs) — Concrete hardware drivers (`Dm01PwmHardware` for 16 kHz complementary PWM with dead-time, `Dm01SensorsHardware`).
-  - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) — Standalone bare-metal Cortex-M4F open firmware (`dm01_firmware`), speaks standard 18-byte display protocol, uses 5-block EEPROM, with uncapped cadence, smooth FOC, and thermal rollback.
+  - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `FLASH`, `IWDG`, `SCB`) and embedded Flash controller drivers.
+  - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) & [`src/bin/firmware_dm02.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware_dm02.rs) — Standalone bare-metal Cortex-M4F open firmware targets (`dm01_firmware` MSP `0x20005628` and `dm02_firmware` MSP `0x20005620`), speaking standard 18-byte display protocol, using Page 127 Flash EEPROM persistence, 256-sample startup shunt auto-zero calibration, TIM1 break trip protection, with gear-safe progressive knee, sensorless speed fallback, smooth FOC, and thermal rollback.
   - [`memory.ld`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/memory.ld) & [`build.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/build.rs) — Cortex-M4F Flash (`0x08001800`) / SRAM (`0x20000000`) linker script with automated cargo search configuration.
   - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — Unified CLI utility (`toseven_pack`) to inspect, unpack, repack, create (directly from ELF or raw binary), objcopy, verify, and flash motor controller `.Pack` containers, as well as inspect (`display info`), permanently unlock (`display patch`), and flash (`display flash [--unlock]`) display `.hex` firmware.
 - [`blobs/`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/blobs/README.md) — External proprietary assets (.gitignore'd for clean-room legal safety):
@@ -41,8 +41,10 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
   - `blobs/manuals/` (PDF user manuals)
   - Fully cataloged with SHA-256 hashes in [`blobs/README.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/blobs/README.md).
 - `Documentation/`
-  - [`Bench_Testing_Bringup_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Bench_Testing_Bringup_Guide.md) — Hardware bring-up runbook, Julet 5-pin / 8-pin harness pinouts, 48V @ 1.0A bench safety limits, and step-by-step verification protocol.
-  - [`ToSeven_IAP_Flashing_Protocol.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/ToSeven_IAP_Flashing_Protocol.md) — Definitive clean-room reverse engineering specification of the Motor Controller IAP protocol (handshake, 21-byte wakeup frame, 12-byte header, 1024-byte sector pacing, mathematical proof of container XOR keys) and Display ISP protocol (MegaHunt MH2020C / MH1903).
+  - [`Firmware_Flashing_and_Recovery_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Firmware_Flashing_and_Recovery_Guide.md) — Step-by-step flashing, unbricking, and recovery runbook for DM01/DM02 motor controllers and displays.
+  - [`Forensic_Firmware_Gap_Analysis_V6510C_vs_Open_Firmware.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Forensic_Firmware_Gap_Analysis_V6510C_vs_Open_Firmware.md) — Exhaustive comparative forensic analysis between stock factory `V6510C` Cortex-M4F binary disassembly and DM+ Open Firmware, mapping all 73 vector entries, ISR timings, FOC loops, and hardware parity achievements.
+  - [`Bench_Testing_Bringup_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Bench_Testing_Bringup_Guide.md) — Hardware bring-up runbook, Julet 5-pin programming connector and harness pinouts, 48V @ 1.0A bench safety limits, and step-by-step verification protocol.
+  - [`ToSeven_IAP_Flashing_Protocol.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/ToSeven_IAP_Flashing_Protocol.md) — Definitive clean-room reverse engineering specification of the Motor Controller IAP protocol (handshake, 21-byte wakeup frame, 12-byte header, 1024-byte sector pacing, Tier 2 wire stream XOR cipher, mathematical proof of container XOR keys) and Display ISP protocol (MegaHunt MH2020C / MH1903).
   - [`ToSeven_Display_Firmware_Architecture.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/ToSeven_Display_Firmware_Architecture.md) — Complete reverse-engineering specification of ToSeven displays (`T24V`, `LCD135C`, `M15`, `T154`), 13 throttle modes, button matrix, EEPROM sync, OTA flasher, and post-Oct 2024 menu lockout bypass.
   - [`DM01_Power_Curve_Guide.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/DM01_Power_Curve_Guide.md) — Human-readable guide explaining how the DM01 determines power without memory-index jargon.
   - [`Official_Specifications.md`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/Documentation/Official_Specifications.md) — Hardware specifications and official manual links.
@@ -64,6 +66,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 | **Initial MSP / `Reset_Handler`** | `0x20005628` / `0x08001A51` | `0x20005620` / `0x08001A51` |
 | **Factory EEPROM Image (480 B)** | `0x0800EE70` (`"TS1000W"`) | `0x0800F142` (`"TS500W"`) |
 | **Flash EEPROM Storage (`0x0801FC00`)** | 5 blocks (`0x20, 0x40, 0x40, 0xA0, 0xA0`), XOR `0xA5`, magic `A5 01 FE`, 16-entry nibble CRC-16 | Identical 5-block format |
+| **Wire Flash Stream Cipher** | Byte-wise XOR `UartMask` (`header[0x17]`, e.g. `0x89` / `0xB5`) | Byte-wise XOR `UartMask` (`header[0x17]`, e.g. `0xA9`) |
 | **Display UART Stream Cipher** | Byte-wise XOR `0x69` | Byte-wise XOR `0x69` |
 
 ### 2. Decompiled Power Curve Rules (Human-Readable Summary)
@@ -84,7 +87,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 
 ## Common Build & Verification Commands
 ```bash
-# Run all unit and integration tests
+# Run all unit, integration, and simulation tests (55 tests)
 cargo test --manifest-path dm01-firmware/Cargo.toml
 
 # Check strict formatting and clippy lints
@@ -94,17 +97,20 @@ cargo clippy --manifest-path dm01-firmware/Cargo.toml --all-targets -- -D warnin
 # Verify strict #![no_std] embedded compilation
 cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
 
-# Build standalone bare-metal Cortex-M4F ELF binary
-cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --release
+# Build standalone bare-metal Cortex-M4F ELF binaries
+cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --bin dm02_firmware --release
 
 # Extract raw Flash binary from ELF
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy target/thumbv7em-none-eabihf/release/dm02_firmware build/dm02_firmware.bin
 
-# Package bare-metal firmware directly from ELF into official 128 KB .Pack container
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+# Package bare-metal firmware directly from ELF into official 128 KB .Pack containers
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm02 target/thumbv7em-none-eabihf/release/dm02_firmware build/TO7-DM02-OpenFirmware-v0.3.0.Pack
 
-# Inspect generated .Pack container
+# Inspect generated .Pack containers
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info build/TO7-DM02-OpenFirmware-v0.3.0.Pack
 
 # Inspect and verify DM01 and DM02 stock .Pack containers
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify "blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack"
@@ -156,3 +162,4 @@ To prevent `README.md` from falling behind or drifting out of sync with code and
 5. **AI Ethics & Accuracy:** Never claim comprehensive manual human line-by-line review of decompiled code. Clearly state the use of AI assistance (Gemini / Claude) along with automated tests, bit-exact roundtrips, and simulation verification, emphasizing the need for community bench testing.
 6. **Community Inquiries:** When addressing community feedback (such as torque sensor span calculation, nylon primary reduction gear protection, or battery LVC true 0A cutoff), keep the technical rationale in the "Community Inquiries & Technical Feedback" section aligned with ongoing developments.
 7. **Always Synchronize Before Pushes/Tags:** Always update `README.md` to reflect all implemented features, test counts, UI additions, and tag versions prior to creating git tags or pushing to remotes.
+8. **Prominent Liability & Warranty Disclaimers:** Maintain clear disclaimers that the software and firmware are provided "AS IS" with NO WARRANTY, and any damage to equipment is solely the user's responsibility.

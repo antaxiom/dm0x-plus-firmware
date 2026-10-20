@@ -15,6 +15,7 @@ use crate::power_curve::{
 };
 use crate::sensors::{parse_throttle_permille, TorqueSensorState};
 use crate::thermal::ThermalMonitor;
+use crate::tuning::TuningProfile;
 
 /// Snapshot of physical sensor inputs sampled at each periodic control tick.
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +50,7 @@ pub struct ControlOutput {
 /// (`step_v6510c`) and the T24 Display Manual baseline (`step`).
 pub struct Dm01Controller {
     pub config: MotorConfig,
+    pub tuning: TuningProfile,
     pub mode: RidingMode,
     pub assist: AssistSelection,
     pub torque_state: TorqueSensorState,
@@ -68,6 +70,7 @@ impl Dm01Controller {
         let th_start_mv = config.throttle_startup_vol_mv;
         Self {
             config,
+            tuning: TuningProfile::stock_v6510c(),
             mode: RidingMode::City,
             assist: AssistSelection::Level(1),
             torque_state: TorqueSensorState::new(zero_mv),
@@ -77,6 +80,30 @@ impl Dm01Controller {
             v6510c_arbitrator: PowerCurveArbitrator::new(),
             pas_keep_timer_ms: 0,
             shift_timer_ms: 0,
+        }
+    }
+
+    /// Creates a new `Dm01Controller` initialized with a specified custom [`TuningProfile`].
+    pub fn with_tuning(config: MotorConfig, tuning: TuningProfile) -> Self {
+        let mut controller = Self::new(config);
+        controller.tuning = tuning;
+        controller
+    }
+
+    /// Computes the effective vehicle speed in 0.1 km/h.
+    ///
+    /// If a physical wheel speed sensor reading is available (`wheel_speed_deci_kph > 0`),
+    /// it takes precedence. If the physical wheel speed sensor reads 0 (due to sensor failure,
+    /// detached spoke magnet, or broken wire) and the rider is pedaling forward (`cadence_rpm > 0`),
+    /// the speed is estimated using the drivetrain gear kinematics:
+    /// `effective_speed = Cadence * midpoint_ratio * wheel_circumference`.
+    pub fn effective_wheel_speed_deci_kph(&self, inputs: &SensorInputs) -> u16 {
+        if inputs.wheel_speed_deci_kph > 0 {
+            inputs.wheel_speed_deci_kph
+        } else if inputs.cadence_rpm > 0 && !inputs.backpedaling {
+            self.config.estimate_speed_deci_kph(inputs.cadence_rpm)
+        } else {
+            0
         }
     }
 
@@ -147,7 +174,7 @@ impl Dm01Controller {
         // 2. Stage 2A: Torque Sensor Curve (ignores Pwr[level], uses EAssist[level] and global_ceil_da)
         let torque_offset_da = (self.config.torque_min_out_current_ma / 100) as u16;
         let torque_da = if self.config.torque_sensor_enabled {
-            self.v6510c_torque.compute_current_da(
+            self.v6510c_torque.compute_current_da_with_profile(
                 inputs.torque_adc_mv,
                 inputs.cadence_rpm,
                 self.config.torque_filter,
@@ -156,6 +183,8 @@ impl Dm01Controller {
                 torque_offset_da,
                 mode_max_da,
                 global_ceil_da,
+                level_ceil_da,
+                &self.tuning,
             )
         } else {
             0
@@ -185,22 +214,27 @@ impl Dm01Controller {
 
         // 5. Stage 3: Arbitrator, ±0.2A/step Ramp, Speed Soft-Taper, and LVC 3.0V Cushion
         let pedaling_forward = inputs.cadence_rpm > 0 && !inputs.backpedaling;
-        let speed_limit_deci_kph = if inputs.walk_assist_held {
-            60
-        } else {
-            level_cfg.speed_limit_deci_kph
-        };
-        let final_da = self.v6510c_arbitrator.step(
+        let speed_limit_deci_kph =
+            if self.config.speed_sensor_fail_unlimit && inputs.wheel_speed_deci_kph == 0 {
+                0 // Speed limit bypassed when physical speed sensor fails/reads 0 and unlimit mode is active
+            } else if inputs.walk_assist_held {
+                60
+            } else {
+                level_cfg.speed_limit_deci_kph
+            };
+        let eff_speed = self.effective_wheel_speed_deci_kph(inputs);
+        let final_da = self.v6510c_arbitrator.step_with_profile(
             cutoff,
             pedaling_forward,
             torque_da,
             pas_da,
             throttle_da,
-            inputs.wheel_speed_deci_kph,
+            eff_speed,
             speed_limit_deci_kph,
             inputs.walk_assist_held,
             battery_dv,
             lvc_dv,
+            &self.tuning,
         );
 
         ControlOutput {
@@ -235,13 +269,11 @@ impl Dm01Controller {
             self.shift_timer_ms = self.shift_timer_ms.saturating_sub(dt_ms);
         }
 
+        let eff_speed = self.effective_wheel_speed_deci_kph(inputs);
+
         // 3. Walk assistance (6.0 km/h cap, T24 Manual Page 4)
         if inputs.walk_assist_held {
-            let walk_current_ma = if inputs.wheel_speed_deci_kph < 60 {
-                3_000
-            } else {
-                0
-            };
+            let walk_current_ma = if eff_speed < 60 { 3_000 } else { 0 };
             return ControlOutput {
                 target_current_ma: walk_current_ma,
                 reverse_direction: false,
@@ -256,9 +288,9 @@ impl Dm01Controller {
             AssistSelection::Off => None,
             AssistSelection::Level(lvl) => self.config.active_level(lvl).copied(),
             AssistSelection::Auto => {
-                let idx = if inputs.wheel_speed_deci_kph < 120 {
+                let idx = if eff_speed < 120 {
                     1
-                } else if inputs.wheel_speed_deci_kph < 220 {
+                } else if eff_speed < 220 {
                     3
                 } else {
                     self.config.level_count
@@ -350,7 +382,9 @@ impl Dm01Controller {
                 ((inputs.cadence_rpm as u32 * max_wheel) / max_pas).min(max_wheel) as u16
             }
         };
-        if inputs.wheel_speed_deci_kph >= pedal_speed_limit_deci_kph {
+        let speed_governor_active =
+            !(self.config.speed_sensor_fail_unlimit && inputs.wheel_speed_deci_kph == 0);
+        if speed_governor_active && eff_speed >= pedal_speed_limit_deci_kph {
             pedal_current_ma = 0;
         }
 
@@ -360,7 +394,7 @@ impl Dm01Controller {
             parse_throttle_permille(inputs.throttle_adc_mv, self.config.throttle_startup_vol_mv);
         if throttle_permille > 0 {
             if !self.config.throttle_enabled {
-                if inputs.wheel_speed_deci_kph < 60 {
+                if eff_speed < 60 {
                     throttle_current_ma = (mode_max_ma * throttle_permille as u32) / 4000;
                 }
             } else {
@@ -398,9 +432,13 @@ impl Dm01Controller {
                     } else {
                         level_ceiling_ma
                     };
-                    let within_speed = match opt_limit {
-                        Some(limit) => inputs.wheel_speed_deci_kph < limit,
-                        None => true,
+                    let within_speed = if !speed_governor_active {
+                        true
+                    } else {
+                        match opt_limit {
+                            Some(limit) => eff_speed < limit,
+                            None => true,
+                        }
                     };
                     if within_speed {
                         throttle_current_ma = (ceiling * throttle_permille as u32) / 1000;
@@ -513,6 +551,98 @@ mod tests {
         assert_eq!(
             overheated.target_current_ma,
             (normal.target_current_ma * 30) / 100
+        );
+    }
+
+    #[test]
+    fn test_sensorless_speed_fallback_when_speed_sensor_disconnected() {
+        let mut ctrl = Dm01Controller::new(MotorConfig::default());
+        ctrl.mode = RidingMode::Sport;
+        ctrl.assist = AssistSelection::Level(1); // Speed limit = 60 (6.0 km/h)
+
+        let mut inputs = default_inputs();
+        inputs.wheel_speed_deci_kph = 0; // Spoke magnet lost or sensor disconnected!
+        inputs.cadence_rpm = 60;
+        inputs.torque_adc_mv = 2000;
+
+        // Effective speed must fall back to gear kinematics estimate (~21.0 km/h = 210 deci-km/h)
+        let eff_spd = ctrl.effective_wheel_speed_deci_kph(&inputs);
+        assert_eq!(eff_spd, 210);
+
+        // Case A: When speed_sensor_fail_unlimit is false (Speed Limit mode),
+        // since eff_spd (210) > 60, speed governor must cut power
+        ctrl.config.speed_sensor_fail_unlimit = false;
+        let out_v6510c_limited = ctrl.step_v6510c(&inputs);
+        assert_eq!(
+            out_v6510c_limited.target_current_ma, 0,
+            "Speed governor must enforce level limit using sensorless speed estimate when unlimit=false"
+        );
+
+        // Case B: When speed_sensor_fail_unlimit is true (Speed Unlimit mode, factory default),
+        // rider bypasses speed limit when physical sensor is disconnected/0
+        ctrl.config.speed_sensor_fail_unlimit = true;
+        let out_v6510c_unlimited = ctrl.step_v6510c(&inputs);
+        assert!(
+            out_v6510c_unlimited.target_current_ma > 0,
+            "Speed limit must be bypassed when speed_sensor_fail_unlimit=true and physical speed is 0"
+        );
+
+        // When physical sensor is working (e.g. 50 = 5.0 km/h < 60), physical reading takes precedence
+        inputs.wheel_speed_deci_kph = 50;
+        assert_eq!(ctrl.effective_wheel_speed_deci_kph(&inputs), 50);
+        let out_working = ctrl.step_v6510c(&inputs);
+        assert!(
+            out_working.target_current_ma > 0,
+            "Power must be delivered when physical speed is within limit"
+        );
+    }
+
+    #[test]
+    fn test_controller_with_gear_safe_tuning_profile() {
+        let config = MotorConfig::default();
+        let mut ctrl_stock = Dm01Controller::new(config.clone());
+        let mut ctrl_gearsafe =
+            Dm01Controller::with_tuning(config, TuningProfile::gear_safe_trail());
+
+        ctrl_stock.mode = RidingMode::Sport;
+        ctrl_stock.assist = AssistSelection::Level(5);
+        ctrl_gearsafe.mode = RidingMode::Sport;
+        ctrl_gearsafe.assist = AssistSelection::Level(5);
+
+        let mut inputs = default_inputs();
+        inputs.torque_adc_mv = 2500;
+        inputs.wheel_speed_deci_kph = 100;
+
+        // At 10 RPM (severe hill climbing / near-stall):
+        // Gear-safe profile protects the blue nylon reduction gear from destructive stall torque
+        inputs.cadence_rpm = 10;
+        let out_stock_10 = ctrl_stock.step_v6510c(&inputs);
+        let out_gearsafe_10 = ctrl_gearsafe.step_v6510c(&inputs);
+        assert!(
+            out_gearsafe_10.target_current_ma > 0,
+            "Must provide gentle assist"
+        );
+        assert!(
+            out_stock_10.target_current_ma > 0,
+            "Stock also provides initial floor"
+        );
+
+        // At 35 RPM: Gear-safe profile delivers full torque assist (100%), whereas stock is only 35/60 = 58%
+        inputs.cadence_rpm = 35;
+        // Step enough iterations to let the ±0.2A/tick arbitrator ramp settle to steady state
+        for _ in 0..150 {
+            ctrl_stock.step_v6510c(&inputs);
+            ctrl_gearsafe.step_v6510c(&inputs);
+        }
+        let out_stock_35 = ctrl_stock.step_v6510c(&inputs);
+        let out_gearsafe_35 = ctrl_gearsafe.step_v6510c(&inputs);
+        assert!(
+            out_gearsafe_35.target_current_ma > out_gearsafe_10.target_current_ma,
+            "Torque must ramp up safely by 35 RPM"
+        );
+        assert!(
+            out_gearsafe_35.target_current_ma > out_stock_35.target_current_ma,
+            "Gear-safe profile achieves full assist at 35 RPM ahead of stock 60 RPM"
         );
     }
 }

@@ -346,12 +346,12 @@ impl MotorConfig {
             max_current_sport_ma: 30_000, // 30.0 A (300 dA)
             nominal_voltage_mv: 48_000,
             low_cut_voltage_mv: 41_000,
-            wheel_circumference_mm: 2230,
+            wheel_circumference_mm: 2075,
             rim_speed_sensor_magnets: 1,
-            crankset_teeth: 44,
-            cassette_max_teeth: 36,
+            crankset_teeth: 46,
+            cassette_max_teeth: 32,
             cassette_min_teeth: 11,
-            speed_sensor_fail_unlimit: false,
+            speed_sensor_fail_unlimit: true,
             motor_hw: MotorHardwareConfig {
                 gear: MotorGearType::Gear,
                 pole_pairs: 4,
@@ -419,6 +419,10 @@ impl MotorConfig {
         cfg.max_current_sport_ma = 18_000;
         cfg.motor_hw.reduction_ratio_x100 = 5300; // 53.00 : 1
         cfg.shift_sensor_enabled = false;
+        cfg.crankset_teeth = 42; // TS500W factory default
+        cfg.cassette_max_teeth = 32;
+        cfg.cassette_min_teeth = 11;
+        cfg.wheel_circumference_mm = 2075;
         cfg.levels[0].power_percent = 25;
         cfg.levels[0].eassist_percent = 30;
         cfg.levels[1].power_percent = 35;
@@ -432,7 +436,7 @@ impl MotorConfig {
         cfg
     }
 
-    /// Synchronizes `Pwr[0..5]` and `EAssist[0..5]` tables from a decoded 480-byte `EepromImage`.
+    /// Synchronizes `Pwr[0..5]`, `EAssist[0..5]`, sprockets, and wheel size from a decoded 480-byte `EepromImage`.
     pub fn apply_eeprom_image(&mut self, eeprom: &EepromImage) {
         let pwr = eeprom.assist_pwr_table();
         let eassist = eeprom.assist_eassist_table();
@@ -442,6 +446,43 @@ impl MotorConfig {
             self.levels[i].eassist_percent = eassist[i];
             i += 1;
         }
+        let crank = eeprom.crankset_teeth();
+        if crank > 0 {
+            self.crankset_teeth = crank;
+        }
+        let max_t = eeprom.cassette_max_teeth();
+        if max_t > 0 {
+            self.cassette_max_teeth = max_t;
+        }
+        let min_t = eeprom.cassette_min_teeth();
+        if min_t > 0 {
+            self.cassette_min_teeth = min_t;
+        }
+        let inches = eeprom.wheel_diameter_inches();
+        if inches > 0 {
+            self.wheel_circumference_mm = ((inches as u32 * 798) / 10) as u16;
+        }
+        self.speed_sensor_fail_unlimit = eeprom.speed_sensor_fail_unlimit();
+    }
+
+    /// Computes the midpoint gear ratio in fixed-point Q8 (256 = 1.0) from configured sprockets:
+    /// `ratio_mid = (Crankset / MinTeeth + Crankset / MaxTeeth) / 2`.
+    pub fn midpoint_gear_ratio_q8(&self) -> u16 {
+        let crank = (self.crankset_teeth as u32).max(1);
+        let min_t = (self.cassette_min_teeth as u32).max(1);
+        let max_t = (self.cassette_max_teeth as u32).max(min_t);
+        let ratio_high = (crank * 256) / min_t;
+        let ratio_low = (crank * 256) / max_t;
+        ((ratio_high + ratio_low) / 2) as u16
+    }
+
+    /// Estimates vehicle speed in 0.1 km/h units from crank cadence using the midpoint gear ratio
+    /// and configured wheel circumference in mm.
+    pub fn estimate_speed_deci_kph(&self, cadence_rpm: u16) -> u16 {
+        let circ_mm = (self.wheel_circumference_mm as u32).max(1000);
+        let ratio_q8 = self.midpoint_gear_ratio_q8() as u32;
+        let num = (cadence_rpm as u32) * ratio_q8 * circ_mm * 3;
+        ((num + 640_000) / 1_280_000) as u16
     }
 
     /// Returns the mode current limit in mA, applying the V6510C constant-power cap above 50.0 V.

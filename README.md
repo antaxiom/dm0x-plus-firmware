@@ -10,49 +10,92 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 > [!NOTE]
 > **DM+** is the current working project name for this unified firmware and tooling ecosystem. Naming may evolve as the project expands to additional motor controllers and displays.
 
+> [!WARNING]
+> ### Disclaimer of Warranty & Equipment Damage Liability
+> **THIS SOFTWARE AND FIRMWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
+> Flashing, configuring, or operating experimental, custom, or reverse-engineered firmware on electric bicycles, motors, controllers, and displays carries inherent electrical, mechanical, and safety risks. **Any damage to your equipment—including blown MOSFETs, thermal degradation, stripped primary reduction gears, damaged battery packs, blown BMS units, harness damage, electrical shorts, or permanently bricked motor controllers and displays—is solely and entirely your own responsibility.**
+> No warranty is provided, whether express, implied, or statutory, including warranties of merchantability, fitness for a particular purpose, and non-infringement. Proceed strictly at your own risk.
+
+> [!CAUTION]
+> ### CRITICAL SAFETY WARNING: BENCH TESTING ONLY AT THIS STAGE
+> **DO NOT INSTALL OPEN-SOURCE FIRMWARE ONTO AN ASSEMBLED ELECTRIC BICYCLE OR ATTEMPT TO RIDE WITH IT.**
+> At this stage, the DM+ open-source motor controller firmware (`dm01_firmware` / `dm02_firmware`) is in active beta bring-up and **MUST NOT BE INSTALLED ANYWHERE OTHER THAN A CONTROLLED BENCH TEST ENVIRONMENT.**
+> - **Bench Testing Exclusively:** Only operate controllers on an adjustable DC bench power supply strictly current-limited to $\le 1.0\text{ A}$ at $48\text{ V}$.
+> - **Never Use a Lithium Battery for Initial Testing:** Do not test open-source firmware using a high-discharge lithium-ion battery pack.
+> - **Oscilloscope & Phase Verification First:** Phase commutation, ADC calibration, shunt offset subtraction, and FOC loop timings must be verified on the bench before any mechanical load is applied.
+> - **Flashing Factory Stock is Safe:** Flashing official stock `.Pack` files or patching display firmware (`.hex`) for menu unlock is fully supported. However, running custom open motor firmware on an actual bicycle is strictly prohibited at this stage.
+
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.3`)
+## What Is Implemented Right Now (`v0.3.0-beta.4` - Released Public Beta)
 
 Rather than relying on future promises, here is the verified functionality available today in this repository:
 
 1. **DM+ Firmware Studio Desktop GUI (`dm-plus-gui`):**
    - Native cross-platform desktop application built with Slint and Rust.
-   - Built-in embedded DM01 Open Firmware container (`128 KB`) for instant, standalone flashing.
+   - Built-in embedded **DM01** and **DM02** Open Firmware containers (`128 KB` each) for instant, standalone flashing without requiring external files.
+   - Automatic target hardware detection when a custom `.Pack` file is loaded (detecting DM01 vs. DM02 from container metadata), locking the hardware model selector to prevent mismatched flashing.
+   - Intelligent parameter isolation: dynamically grays out and disables both the Tuning Profile card and the Battery & Electrical Limits card when a custom `.Pack` file is chosen, since compiled firmware packages contain fixed factory tables and cannot be reconfigured without compiling from source. All section titles remain consistently legible.
+   - Standardized physical hardware model naming (`DM01 (External 12-FET)` and `DM02 (Integrated 6-FET)`), accurately reflecting that all power variants of DM01 (500W/750W/1000W) and DM02 (250W/350W/500W) share identical respective controller hardware and firmware.
    - Native system file pickers (`rfd`) with enforced extension filters (`.Pack` and `.hex`).
-   - Stabilized card geometry with persistent file path rows, fixed-height helper containers, and balanced 50/50 tuning cards that never shift or resize dynamically.
+   - Balanced 2-column card geometry across both Motor Controller and Display tabs, eliminating empty whitespace padding and aligning the Flashing window dimensions and button styling identically across both views.
    - Dedicated "Save Patched .hex..." export button in the Display Patcher card to generate and save unlocked Intel HEX firmware offline without requiring serial hardware.
-   - Synchronized ISP and Motor Flashing windows with uniform 380 px port selectors, 120 px label columns, and identical compact card heights.
-   - Non-blocking asynchronous flashing engine with serial connection timeouts.
+   - Synchronized ISP and Motor Flashing windows with uniform port selectors, clear progress feedback, and non-blocking asynchronous serial engine with connection timeouts.
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
 
-2. **Display Lockout Patcher & ISP Flasher (`toseven_pack display`):**
+2. **Verified Motor Controller IAP Flasher & Container Engine (`toseven_pack` & GUI):**
+   - **Dual-Tier Container & Wire Stream Cipher Architecture:**
+     - **Tier 1 (Container Encryption):** Universal mathematical auto-key formulas verified across 100% of all 15 official stock releases:
+       $$K_{\text{head}} = (\text{pack}[32] + \text{pack}[33]) \pmod{256}$$
+       $$\text{Header CRC} = \text{crc16\_toseven}(\text{header}[0..30]) = \text{header}[30..32]$$
+       $$K_{\text{payload}} = (\text{header}[30] + \text{header}[31]) \pmod{256}$$
+       $$\text{Payload Checksum} = (\text{header}[26..28] \ll 16) \mid \text{header}[28..30]$$
+     - **Tier 2 (Physical Wire Stream Cipher):** Physical UART stream masking during flash writing where every chunk byte is XORed with `UartMask` ($\text{byte}_{\text{wire}} = \text{byte}_{\text{plain}} \oplus \text{UartMask}$, parsed from container header offset `0x17`), matching the bootloader's on-the-fly hardware de-masking into Flash memory (`0x08001800`).
+   - **Full Handshake Protocol Engine:**
+     - **Step 1:** Sends 21-byte wakeup burst (`0xC9, 0x77` encrypted with symmetric `0x69` stream cipher) at 9600 Baud with high/low nibble `UartMask` distribution (bytes 12-13) and hardware DTR reset pulse fallback to wake running application controllers into IAP bootloader mode.
+     - **Step 2:** Bootloader probe at 38400 Baud (vendor factory bootloader default) with automatic 115200 Baud fallback (`0x02` $\rightarrow$ `0x02, 0xFD` or `0x06`).
+     - **Step 3:** 12-byte header handshake (`0x06` ACK $\rightarrow$ 10 ms delay $\rightarrow$ 12-byte header frame containing program size, 32-bit checksum, `UartMask`, and baud index $\rightarrow$ `0x06` ACK).
+     - **Step 4:** Streams payload in 16-byte (`0x10`) chunks with inter-chunk pacing delay (~1 ms) and 1024-byte (1 KB) sector commit acknowledgments (`0x06` ACK).
+     - **Step 5:** Bootloader cumulative 32-bit byte sum verification against Flash contents (`0x04` EOT on match; `0x15` NAK on failure), confirmed matching physical controller hardware.
+   - Automatic hardware target detection (`Dm01` with `0xA8`/`0x67` vs. `Dm02` with `0xF7`/`0xE2`).
+   - Bit-exact unpacking, verification, and repacking matching official vendor tools bit-for-bit.
+   - Natively extracts loadable segments directly from Cortex-M ELF binaries and packages them into official 128 KB `.Pack` containers for both DM01 and DM02 without requiring host `objcopy`.
+
+3. **Display Lockout Patcher & ISP Flasher (`toseven_pack display`):**
    - Automatically parses Intel HEX display firmware dumps (`T24V`, `T154`, `LCD135C`, `M15`).
    - Detects and neutralizes all 6 restriction branch gates introduced in the post-October 2024 factory firmware with ARM Thumb NOP (`0x00BF`) patches.
    - Restores permanent access to `Speed&Power`, maximum current limits, and wheel circumference menus.
    - Flashes patched display firmware directly over USB CDC using the MegaHunt ISP bootloader protocol.
 
-3. **Motor Controller `.Pack` Container Engine (`toseven_pack`):**
-   - Automatic XOR key detector (`0xA8`/`0x67` for DM01, `0xF7`/`0xE2` for DM02).
-   - Bit-exact unpacking and repacking verified against official factory releases.
-   - Natively extracts loadable segments directly from Cortex-M ELF binaries and packages them into official 128 KB `.Pack` containers without requiring host `objcopy`.
-
 4. **Clean-Room Motor Controller Architecture (`dm01-firmware`):**
    - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time clamps ($[6.0\%, 94.0\%]$), and Hall observer.
-   - Complete 3-stage power curve pipeline modeled after the decompiled `V6510C` integer math.
+   - Unified multi-target motor control support for both **DM01** (external 12-FET, 30A Sport, 40.27:1 reduction) and **DM02** (internal 6-FET, 18A Sport, 53.00:1 reduction).
+   - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` (MSP `0x20005628`) and `dm02_firmware` (MSP `0x20005620`).
+   - **Universal Sensorless Speed Fallback:** Computes static midpoint gear ratio $\text{ratio}_{\text{mid}} = \frac{1}{2}\left(\frac{\text{Crankset}}{\text{Min}} + \frac{\text{Crankset}}{\text{Max}}\right)$ from EEPROM Block 4 (`0x1D0..0x1D2`). When the physical wheel speed sensor disconnects, fails, or loses its magnet, dynamically estimates vehicle speed across all modes (torque, PAS, throttle) using $\text{Cadence} \times \text{ratio}_{\text{mid}} \times C_{\text{wheel}}$, preserving active display speedometer telemetry and speed soft-taper governing.
    - **Automatic Span Tracking (`AutoSpanTracking`):** Dynamic $V_{\text{max}} = V_{\text{zero}} + 2300\text{ mV}$ scaling pinning nominal deflection to $2.3\text{ V}$, eliminating thermal zero-point drift and matching realistic human pedal deflection (GitHub Issue #1).
    - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft current ($\le 30\%$) below $18\text{ RPM}$ to protect the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at $35\text{ RPM}$ with progressive quadratic modulation (GitHub Issue #2).
    - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact $0.0\text{ A}$ at $V_{\text{LVC}}$ across the $3.0\text{ V}$ reserve cushion, replacing the stock 25% floor to eliminate sudden BMS disconnects under battery sag (GitHub Issue #3).
    - Source-level tuning profiles: gear-safe progressive, commuter comfort, uncapped cadence (metal gear only), progressive quadratic torque response, and unified level assist ceilings.
-   - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16.
-   - Standalone bare-metal Cortex-M4F binary (`dm01_firmware`) with dedicated vector table, peripheral register mappings (`pac.rs`), and safe High-Z gate-driver hardware drivers (`hal.rs`).
+   - **Hardware Parity & Low-Level Drivers:**
+     - **256-Sample Shunt Auto-Zero (`0x08009A6C`):** Synchronously averages 256 injected ADC conversions during startup while inverter outputs remain in High-Z (0A), calibrating stationary phase bias and programming `ADC1->jofr1` and `ADC2->jofr1`.
+     - **Flash Page 127 Persistence Driver:** Unlocks, erases, and programs Page 127 (`0x0801FC00`), allowing runtime settings and display parameters to survive power cycles with verified 5-block XOR `0xA5` encryption and CRC-16 integrity.
+     - **Hardware Overcurrent Break Protection:** Configures `TIM1_BDTR.BKE` break input on PB12 to immediately disable all 6 MOSFET gates in $< 50\text{ ns}$ upon comparator trip.
+     - **Hardware Watchdog (`IWDG`):** 500 ms safety trip window refreshed deterministically inside the 1 ms SysTick control loop.
+   - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 48 automated unit, integration, and end-to-end physical simulation tests running in CI.
+   - 55 automated unit, integration, and end-to-end physical simulation tests running in CI (46 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
 
-6. **Safety & Bench Bring-up Runbook:**
-   - Comprehensive bench bring-up guide ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md)) detailing Julet harness pinouts, SWD recovery points, and 48V current-limited bench power supply procedures.
+6. **Native Serial Transport & Cross-Platform Parity:**
+   - Direct POSIX `termios` raw 8N1 driver with automatic `/dev/tty.*` to `/dev/cu.*` callout node conversion, eliminating fragile external `stty` process spawning.
+   - Dedicated `IOSSIOSPEED` custom-baud IOKit `ioctl` support on macOS for accurate line rates across all USB-serial converter chipsets (CH340, FTDI, CP2102).
+   - Modem line state assertion (`TIOCMBIS` with `DTR` and `RTS`), satisfying the MegaHunt USB CDC-ACM display bootloader connection requirements and providing MCU reset pulse support.
+   - Hardware and kernel FIFO queue flushing (`tcflush`) before baud rate transitions and probe sequences to purge leftover telemetry frames, ensuring 100% handshake parity with official Windows tools.
+   - Robust STX (`0x02`) stream synchronization in MegaHunt ISP packet parser, gracefully discarding leading line noise.
+
+7. **Safety & Bench Bring-up Runbook:**
+   - Comprehensive bench bring-up guide ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md)) detailing Julet 5-pin programming pinout, SWD recovery points, and 48V current-limited bench power supply procedures.
 
 ---
 
@@ -101,6 +144,30 @@ We actively track feedback and technical inquiries from the e-bike community. Be
   - Across the $3.0\text{ V}$ cushion ($V_{\text{LVC}} \le V \le V_{\text{LVC}} + 3.0\text{ V}$): Current linearly tapers from $100\%$ down to **exactly $0.0\text{ A}$** at $V_{\text{LVC}}$.
   - At or below $V_{\text{LVC}}$: PWM output is completely suppressed ($0\text{ A}$), preventing battery sag below cell manufacturer limits and eliminating abrupt BMS shutdowns under load.
 
+### 4. Drivetrain Kinematics, Sprocket Sizes & Universal Sensorless Speed Fallback
+- **Observation:** In the display settings menu under `Device`, options exist for `CranksetTeeth` (default 46T DM01 / 42T DM02), `CassetMaxTeeth` (default 32T), and `CassetMinTeeth` (default 11T). In stock firmware, altering these settings appears to have no effect during standard riding, prompting community questions regarding whether the controller is gear-aware or could implement dynamic shifting assistance.
+- **Decompiled Findings & Kinematic Limitations:**
+  - Decompilation of the `V6510C` Cortex-M4F binary (`0x0800625E`) revealed that the motor controller reads these three EEPROM parameters from Block 4 (`0x1D0..0x1D2`) to precompute a static midpoint gear ratio:
+    $$\text{ratio}_{\text{mid}} = \frac{1}{2}\left(\frac{\text{Crankset}}{\text{CassetMin}} + \frac{\text{Crankset}}{\text{CassetMax}}\right)$$
+    In stock firmware, this value was utilized strictly in `PedalSpeed` cadence modes.
+  - Real-time dynamic gear ratio estimation ($\frac{\omega_{\text{wheel}}}{\omega_{\text{crank}}}$) is mechanically constrained on mid-drive bicycles:
+    1. **Pulse Latency:** A standard 1-magnet spoke sensor provides only 1 pulse per wheel revolution. At low climbing speeds ($6\text{ km/h}$), each pulse arrives $\approx 1.4\text{ seconds}$ apart. By the time a ratio change is mathematically registered, the shift is already complete.
+    2. **Dual Freewheel Decoupling:** Both the bottom bracket sprag clutch and the rear wheel cassette freehub decouple crank speed from wheel speed during coasting, ratcheting, or light pedaling.
+    3. **Drivetrain Disturbances:** Chain slap, clutch derailleur spring bounce, cassette tooth step-changes, and full-suspension pedal kickback cause temporary ratio spikes. Triggering power cuts or shift detection on transient spikes would stall riders during critical climbs.
+- **DM+ Implementation:** Rather than attempting fragile dynamic shift-guessing, DM+ utilizes these EEPROM sprocket parameters for **Universal Sensorless Speed Fallback**:
+  - When the physical wheel speed sensor is operational, its reading governs speed limits and telemetry directly.
+  - If the wheel speed sensor cable is severed, unplugged, or the spoke magnet is knocked out of alignment ($v_{\text{wheel}} = 0$), DM+ automatically falls back to:
+    $$v_{\text{est}} = \text{Cadence} \times \text{ratio}_{\text{mid}} \times C_{\text{wheel}}$$
+  - Operates across **all riding modes** (Torque, PAS, and Throttle), ensuring that handlebar display speedometers remain active and vehicle speed soft-taper governors continue protecting riders and legal compliance even during sensor hardware failure.
+  - **SpeedSensorFail Bypass Support:** When riders intentionally choose `SpeedSensorFail = Speed Unlimit` (`0x1D7 == 0`, factory default), the open firmware respects this option and bypasses the speed governor cutoff when the physical wheel sensor reads 0 or is disconnected, while still reporting estimated kinematic speed to the display. If set to `Speed Limit` (`0x1D7 == 1`), the governor strictly enforces assist level speed cutoffs using estimated speed.
+
+### 5. Decompiled Forensic Gap Analysis (`V6510C` vs. `dm01-firmware`)
+- A comprehensive forensic gap analysis is available in the artifact documentation:
+  - Vector table interrupt mapping across all active ISRs (ADC JEOC IRQ 18, TIM1 Break IRQ 24, TIM1 UP IRQ 25, TIM2 Hall IRQ 28, TIM4 Speed IRQ 30, USART3 IRQ 39).
+  - Identification of STM32 hardware Injected Offset Registers (`ADC1->JOFR1` / `ADC2->JOFR1`) utilized by vendor firmware for zero-overhead phase shunt subtraction.
+  - Decompilation of the 5-stage FOC rotor state machine (States 0, 2, 4, 6, 8) and inverter reset routines (`0x08006000`).
+  - Wire protocol byte multiplexing between regular throttle (`0x01`) and active `FaultFlags` (`0x11`) driving all 12 display error messages.
+
 ---
 
 ## Detailed Documentation & Reference Guides
@@ -124,6 +191,9 @@ We actively track feedback and technical inquiries from the e-bike community. Be
 | **Multi-Voltage Adaptability** | Hardcoded 50.0V constant-power cap; poor 36V / 52V optimization | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages without bricking |
 | **Display Compatibility** | Post-October 2024 menu lockouts lock users out of settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15`, with live USB flashing or direct `.hex` export | Regain full access to `Speed&Power`, current limits, and wheel circumference |
 | **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, export patched hex | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
+
+> [!TIP]
+> For step-by-step flashing procedures, recovery of corrupted controllers, hardware pinouts, and display ISP unlocking instructions, consult the [`Documentation/Firmware_Flashing_and_Recovery_Guide.md`](Documentation/Firmware_Flashing_and_Recovery_Guide.md).
 
 </details>
 
@@ -272,6 +342,7 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 │       ├── ci.yml           # Continuous integration (linter, unit tests, no_std, simulations)
 │       └── release.yml      # Cross-platform release matrix (Linux, macOS Universal, Windows)
 ├── Documentation/
+│   ├── Firmware_Flashing_and_Recovery_Guide.md # Step-by-step flashing & unbricking recovery runbook
 │   ├── Bench_Testing_Bringup_Guide.md # Hardware bring-up runbook, Julet pinouts, bench setup
 │   ├── ToSeven_IAP_Flashing_Protocol.md # Clean-room IAP UART and display ISP flashing spec
 │   ├── ToSeven_Display_Firmware_Architecture.md # Display architecture, throttle modes, lockout bypass
@@ -341,4 +412,5 @@ This project is a clean-room reverse-engineering, documentation, and open-source
 
 - No proprietary binaries, copyrighted vendor manuals, or closed-source code are distributed in this repository.
 - All proprietary `.Pack` files, `.hex` display dumps, and vendor APKs remain the property of their respective owners and are isolated in `.gitignore`d storage as detailed in [`blobs/README.md`](blobs/README.md).
-- Flashing custom firmware to any motor controller carries inherent electrical and mechanical risks. Use at your own risk.
+- **Assumption of Risk & Equipment Damage:** Flashing custom, open-source, or modified firmware to any motor controller or display carries inherent electrical and mechanical risks. **Any damage to your equipment—including motor controllers, displays, batteries, wiring, gears, or bicycles—is entirely your own responsibility.**
+- **No Warranty:** This project is provided "AS IS", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be liable for any claim, damages, or other liability. See [LICENSE](LICENSE) for complete terms.

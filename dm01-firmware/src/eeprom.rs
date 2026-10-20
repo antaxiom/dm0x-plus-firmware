@@ -163,6 +163,32 @@ impl EepromImage {
         out
     }
 
+    /// Reads and validates the 480-byte EEPROM image from physical MCU Flash Page 127 (`0x0801FC00`).
+    /// Returns `Some(img)` if valid magic (`A5 01 FE`) and all 5 block CRCs pass, or `None` if unprogrammed/corrupt.
+    ///
+    /// # Safety
+    /// Must only be executed on target hardware where `0x0801FC00` is mapped to internal Flash.
+    pub unsafe fn read_from_flash() -> Option<Self> {
+        let ptr = EEPROM_FLASH_BASE_ADDR as *const u8;
+        let flash_slice = &*(ptr as *const [u8; EEPROM_TOTAL_LEN]);
+        Self::from_encrypted_flash(flash_slice).ok()
+    }
+
+    /// Writes this EEPROM image to MCU Flash Page 127 (`0x0801FC00`), encrypting with `0xA5`
+    /// and recalculating all 5 block CRCs.
+    pub fn write_to_flash(&mut self) -> Result<(), crate::pac::FlashError> {
+        let encrypted = self.to_encrypted_flash();
+        let mut halfwords = [0u16; EEPROM_TOTAL_LEN / 2];
+        let mut i = 0;
+        while i < EEPROM_TOTAL_LEN / 2 {
+            halfwords[i] = u16::from_le_bytes([encrypted[i * 2], encrypted[i * 2 + 1]]);
+            i += 1;
+        }
+
+        crate::pac::HardwarePeripherals::flash_erase_page(EEPROM_FLASH_BASE_ADDR)?;
+        crate::pac::HardwarePeripherals::flash_write_halfwords(EEPROM_FLASH_BASE_ADDR, &halfwords)
+    }
+
     /// Verifies the Block 1 magic header (`A5 01 FE`) and the little-endian CRC-16
     /// at the end of each of the 5 blocks. Returns `Err(block_index)` if any block fails.
     pub fn verify_all_blocks(&self) -> Result<(), usize> {
@@ -240,6 +266,84 @@ impl EepromImage {
         self.raw[0x14F..0x154].copy_from_slice(&eassist);
         self.update_all_crcs();
     }
+
+    /// Returns the crankset (chainring) tooth count stored in Block 4 (`0x1D0`, e.g. 46T for DM01, 42T for DM02).
+    pub fn crankset_teeth(&self) -> u8 {
+        self.raw[0x1D0]
+    }
+
+    /// Sets the crankset (chainring) tooth count in Block 4 (`0x1D0`) and refreshes block CRCs.
+    pub fn set_crankset_teeth(&mut self, teeth: u8) {
+        self.raw[0x1D0] = teeth;
+        self.update_all_crcs();
+    }
+
+    /// Returns the largest cassette sprocket tooth count stored in Block 4 (`0x1D1`, e.g. 32T).
+    pub fn cassette_max_teeth(&self) -> u8 {
+        self.raw[0x1D1]
+    }
+
+    /// Sets the largest cassette sprocket tooth count in Block 4 (`0x1D1`) and refreshes block CRCs.
+    pub fn set_cassette_max_teeth(&mut self, teeth: u8) {
+        self.raw[0x1D1] = teeth;
+        self.update_all_crcs();
+    }
+
+    /// Returns the smallest cassette sprocket tooth count stored in Block 4 (`0x1D2`, e.g. 11T).
+    pub fn cassette_min_teeth(&self) -> u8 {
+        self.raw[0x1D2]
+    }
+
+    /// Sets the smallest cassette sprocket tooth count in Block 4 (`0x1D2`) and refreshes block CRCs.
+    pub fn set_cassette_min_teeth(&mut self, teeth: u8) {
+        self.raw[0x1D2] = teeth;
+        self.update_all_crcs();
+    }
+
+    /// Returns the wheel diameter in inches stored at the start of Block 4 (`0x140`, e.g. 26 inches).
+    pub fn wheel_diameter_inches(&self) -> u8 {
+        self.raw[0x140]
+    }
+
+    /// Sets the wheel diameter in inches in Block 4 (`0x140`) and refreshes block CRCs.
+    pub fn set_wheel_diameter_inches(&mut self, inches: u8) {
+        self.raw[0x140] = inches;
+        self.update_all_crcs();
+    }
+
+    /// Returns true if SpeedSensorFail is set to `Speed Unlimit` (stored as `0` at `0x1D7` in Block 4).
+    pub fn speed_sensor_fail_unlimit(&self) -> bool {
+        self.raw[0x1D7] == 0
+    }
+
+    /// Sets the SpeedSensorFail setting in Block 4 (`0x1D7`, `0` = Speed Unlimit, `1` = Speed Limit).
+    pub fn set_speed_sensor_fail_unlimit(&mut self, unlimit: bool) {
+        self.raw[0x1D7] = if unlimit { 0 } else { 1 };
+        self.update_all_crcs();
+    }
+
+    /// Computes the static midpoint gear ratio:
+    /// `ratio_mid = (Crankset / MinTeeth + Crankset / MaxTeeth) / 2`
+    /// scaled by 256 (fixed-point Q8, where 256 = 1.0).
+    pub fn midpoint_gear_ratio_q8(&self) -> u16 {
+        let crank = self.crankset_teeth() as u32;
+        let min_t = (self.cassette_min_teeth() as u32).max(1);
+        let max_t = (self.cassette_max_teeth() as u32).max(min_t);
+        let ratio_high = (crank * 256) / min_t;
+        let ratio_low = (crank * 256) / max_t;
+        ((ratio_high + ratio_low) / 2) as u16
+    }
+
+    /// Estimates vehicle speed in 0.1 km/h units from crank cadence using the midpoint gear ratio
+    /// and wheel diameter in inches.
+    pub fn estimate_speed_deci_kph(&self, cadence_rpm: u16) -> u16 {
+        let inches = self.wheel_diameter_inches();
+        let eff_inches = if inches == 0 { 26 } else { inches };
+        let circ_mm = (eff_inches as u32 * 798) / 10;
+        let ratio_q8 = self.midpoint_gear_ratio_q8() as u32;
+        let num = (cadence_rpm as u32) * ratio_q8 * circ_mm * 3;
+        ((num + 640_000) / 1_280_000) as u16
+    }
 }
 
 #[cfg(test)]
@@ -253,12 +357,32 @@ mod tests {
         assert_eq!(dm01.model_name_bytes(), b"TS1000W");
         assert_eq!(dm01.assist_pwr_table(), [20, 40, 60, 80, 100]);
         assert_eq!(dm01.assist_eassist_table(), [30, 40, 60, 80, 100]);
+        assert_eq!(dm01.crankset_teeth(), 46);
+        assert_eq!(dm01.cassette_max_teeth(), 32);
+        assert_eq!(dm01.cassette_min_teeth(), 11);
+        assert_eq!(dm01.wheel_diameter_inches(), 26);
+        assert!(dm01.speed_sensor_fail_unlimit());
+        assert_eq!(dm01.midpoint_gear_ratio_q8(), 719);
+        assert_eq!(dm01.estimate_speed_deci_kph(60), 210); // 21.0 km/h
+        assert_eq!(dm01.estimate_speed_deci_kph(0), 0);
+
+        let mut mod_dm01 = dm01.clone();
+        mod_dm01.set_speed_sensor_fail_unlimit(false);
+        assert!(!mod_dm01.speed_sensor_fail_unlimit());
+        assert_eq!(mod_dm01.verify_all_blocks(), Ok(()));
 
         let dm02 = EepromImage::default_dm02();
         assert_eq!(dm02.verify_all_blocks(), Ok(()));
         assert_eq!(dm02.model_name_bytes(), b"TS500W");
         assert_eq!(dm02.assist_pwr_table(), [25, 35, 50, 70, 100]);
         assert_eq!(dm02.assist_eassist_table(), [30, 50, 60, 80, 100]);
+        assert_eq!(dm02.crankset_teeth(), 42);
+        assert_eq!(dm02.cassette_max_teeth(), 32);
+        assert_eq!(dm02.cassette_min_teeth(), 11);
+        assert_eq!(dm02.wheel_diameter_inches(), 26);
+        assert!(dm02.speed_sensor_fail_unlimit());
+        assert_eq!(dm02.midpoint_gear_ratio_q8(), 656);
+        assert_eq!(dm02.estimate_speed_deci_kph(60), 191); // 19.1 km/h
     }
 
     #[test]

@@ -1013,6 +1013,9 @@ dependencies = [
 [[package]]
 name = "dm01-firmware"
 version = "0.3.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "document-features"

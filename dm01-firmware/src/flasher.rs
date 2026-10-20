@@ -54,7 +54,10 @@ pub const FLASH_SECTOR_SIZE: usize = 1024;
 /// Baud rate used for the 21-byte application-mode wakeup packet (9600 Baud).
 pub const IAP_WAKEUP_BAUD: u32 = 9_600;
 
-/// Baud rate used for bootloader probing, header exchange, and sector streaming (115200 Baud).
+/// Standard factory IAP bootloader baud rate (38400 Baud) used by ToSeven controllers.
+pub const IAP_BAUD_38400: u32 = 38_400;
+
+/// Optional high-speed IAP bootloader baud rate (115200 Baud).
 pub const IAP_BAUD_115200: u32 = 115_200;
 
 /// MegaHunt display ISP STX synchronizer.
@@ -117,23 +120,40 @@ pub fn encode_7bit_u16(val: u16) -> [u8; 3] {
     ]
 }
 
+/// Encodes a 16-bit ToSeven CRC into the 3-byte layout expected by the IAP wakeup packet:
+/// - Byte 0: CRC bits 15..9 (`(crc >> 9) & 0x7F`)
+/// - Byte 1: CRC bits 8..2 (`(crc >> 2) & 0x7F`)
+/// - Byte 2: CRC bits 1..0 with bit 7 set (`((crc & 0x03) as u8) | 0x80`)
+pub fn encode_wakeup_crc(crc: u16) -> [u8; 3] {
+    [
+        ((crc >> 9) & 0x7F) as u8,
+        ((crc >> 2) & 0x7F) as u8,
+        ((crc & 0x03) as u8) | 0x80,
+    ]
+}
+
+/// Decodes the 3-byte IAP wakeup packet CRC back into a 16-bit ToSeven CRC.
+pub fn decode_wakeup_crc(b: &[u8; 3]) -> u16 {
+    (((b[0] & 0x7F) as u16) << 9) | (((b[1] & 0x7F) as u16) << 2) | ((b[2] & 0x03) as u16)
+}
+
 /// Constructs the 21-byte "Enter IAP Mode" packet sent to force the controller MCU into bootloader mode.
 ///
 /// Layout (unencrypted 21 bytes):
 /// - `[0..1]`: `0xC9, 0x77` (Sync)
 /// - `[2..6]`: `program_size` (5 bytes, 7-bit big-endian)
 /// - `[7..11]`: `payload_checksum` (5 bytes, 7-bit big-endian)
-/// - `[12]`: `payload_xor_key >> 4` (high nibble)
-/// - `[13]`: `payload_xor_key & 0x0F` (low nibble)
+/// - `[12]`: `(uart_mask >> 4) & 0x0F` (high nibble of UartMask at header offset 0x17)
+/// - `[13]`: `uart_mask & 0x0F` (low nibble of UartMask at header offset 0x17)
 /// - `[14]`: `0x5A` (CMD_IAP_PROGRAM)
 /// - `[15..17]`: `customer_num` (3 bytes, 7-bit big-endian)
-/// - `[18..20]`: ToSeven CRC-16 over bytes 0..17 (split into 3 7-bit bytes, with byte 20 `|= 0x80`)
+/// - `[18..20]`: ToSeven CRC-16 over bytes 0..17 encoded via [`encode_wakeup_crc`]
 ///
 /// The entire 21-byte frame is then XORed with `0x69` before transmission.
 pub fn build_wakeup_packet(
     program_size: u32,
     payload_checksum: u32,
-    payload_xor_key: u8,
+    uart_mask: u8,
     customer_num: u16,
 ) -> [u8; 21] {
     let mut pkt = [0u8; 21];
@@ -146,18 +166,16 @@ pub fn build_wakeup_packet(
     let sum_enc = encode_7bit_u32(payload_checksum);
     pkt[7..12].copy_from_slice(&sum_enc);
 
-    pkt[12] = (payload_xor_key >> 4) & 0x0F;
-    pkt[13] = payload_xor_key & 0x0F;
+    pkt[12] = (uart_mask >> 4) & 0x0F;
+    pkt[13] = uart_mask & 0x0F;
     pkt[14] = CMD_IAP_PROGRAM;
 
     let cust_enc = encode_7bit_u16(customer_num);
     pkt[15..18].copy_from_slice(&cust_enc);
 
     let crc = crc16_toseven(&pkt[0..18]);
-    let crc_enc = encode_7bit_u16(crc);
-    pkt[18] = crc_enc[0];
-    pkt[19] = crc_enc[1];
-    pkt[20] = crc_enc[2] | 0x80;
+    let crc_enc = encode_wakeup_crc(crc);
+    pkt[18..21].copy_from_slice(&crc_enc);
 
     // Apply wire encryption (XOR 0x69)
     let mut encrypted = [0u8; 21];
@@ -175,12 +193,12 @@ pub fn build_wakeup_packet(
 /// - `[0..1]`: `0xFF, 0xFF`
 /// - `[2..5]`: `program_size` (Little-Endian `u32`)
 /// - `[6..9]`: `payload_checksum` (Little-Endian `u32`)
-/// - `[10]`: `payload_xor_key`
+/// - `[10]`: `uart_mask` (from container header offset 0x17)
 /// - `[11]`: `baud_index` (0 = 38400, 1 = 57600, 2 = 115200)
 pub fn build_header_packet(
     program_size: u32,
     payload_checksum: u32,
-    payload_xor_key: u8,
+    uart_mask: u8,
     baud_index: u8,
 ) -> [u8; 12] {
     let mut pkt = [0u8; 12];
@@ -188,7 +206,7 @@ pub fn build_header_packet(
     pkt[1] = 0xFF;
     pkt[2..6].copy_from_slice(&program_size.to_le_bytes());
     pkt[6..10].copy_from_slice(&payload_checksum.to_le_bytes());
-    pkt[10] = payload_xor_key;
+    pkt[10] = uart_mask;
     pkt[11] = baud_index;
     pkt
 }
@@ -289,7 +307,7 @@ pub struct IapSession {
     pub state: IapSessionState,
     pub program_size: u32,
     pub payload_checksum: u32,
-    pub payload_xor_key: u8,
+    pub uart_mask: u8,
     pub customer_num: u16,
     pub baud_index: u8,
 }
@@ -298,7 +316,7 @@ impl IapSession {
     pub fn new(
         program_size: u32,
         payload_checksum: u32,
-        payload_xor_key: u8,
+        uart_mask: u8,
         customer_num: u16,
         baud_index: u8,
     ) -> Self {
@@ -306,7 +324,7 @@ impl IapSession {
             state: IapSessionState::Idle,
             program_size,
             payload_checksum,
-            payload_xor_key,
+            uart_mask,
             customer_num,
             baud_index,
         }
@@ -324,7 +342,7 @@ impl IapSession {
         build_wakeup_packet(
             self.program_size,
             self.payload_checksum,
-            self.payload_xor_key,
+            self.uart_mask,
             self.customer_num,
         )
     }
@@ -362,9 +380,9 @@ impl IapSession {
                 }
             }
             IapSessionState::AwaitingVerification => {
-                if b == IAP_EOT_BYTE {
+                if b == IAP_EOT_BYTE || b == IAP_ACK_BYTE {
                     self.state = IapSessionState::Complete;
-                } else {
+                } else if b == 0x15 {
                     self.state = IapSessionState::Failed(FlasherError::VerificationFailed);
                 }
             }
@@ -533,13 +551,12 @@ mod tests {
 
     #[test]
     fn test_dm01_wakeup_packet_roundtrip() {
-        // DM01 parameters from official TO7-DM01-K260521A-V6510C.Pack
         let p_size: u32 = 57708;
         let p_sum: u32 = 0x0059E35F;
-        let p_key: u8 = 0x67;
+        let uart_mask: u8 = 0x67;
         let cust: u16 = 0x196E;
 
-        let encrypted = build_wakeup_packet(p_size, p_sum, p_key, cust);
+        let encrypted = build_wakeup_packet(p_size, p_sum, uart_mask, cust);
         assert_eq!(encrypted.len(), 21);
 
         // Decrypt with UART_WIRE_MASK (0x69)
@@ -570,27 +587,55 @@ mod tests {
         ]);
         assert_eq!(decoded_sum, p_sum);
 
-        // Verify XOR key nibbles
-        assert_eq!(decrypted[12], (p_key >> 4) & 0x0F);
-        assert_eq!(decrypted[13], p_key & 0x0F);
+        // Verify UartMask nibbles
+        assert_eq!(decrypted[12], (uart_mask >> 4) & 0x0F);
+        assert_eq!(decrypted[13], uart_mask & 0x0F);
         assert_eq!(decrypted[14], CMD_IAP_PROGRAM);
 
         // Verify CRC
         let crc = crc16_toseven(&decrypted[0..18]);
-        let crc_enc = encode_7bit_u16(crc);
+        let crc_enc = encode_wakeup_crc(crc);
         assert_eq!(decrypted[18], crc_enc[0]);
         assert_eq!(decrypted[19], crc_enc[1]);
-        assert_eq!(decrypted[20], crc_enc[2] | 0x80);
+        assert_eq!(decrypted[20], crc_enc[2]);
+        assert_eq!(decode_wakeup_crc(&crc_enc), crc);
+
+        // Verify bit-exact match against wire bytes
+        let expected_wire = [
+            0xA0, 0x1E, 0x69, 0x69, 0x6A, 0x2B, 0x05, 0x69, 0x6B, 0x0E, 0x2F, 0x36, 0x6F, 0x6E,
+            0x33, 0x69, 0x5B, 0x07, 0x43, 0x28, 0xE8,
+        ];
+        assert_eq!(encrypted, expected_wire);
+    }
+
+    #[test]
+    fn test_dm01_v6212c_wakeup_packet_with_uart_mask() {
+        // TO7-DM01-K241021-V6212C.Pack: UartMask is 0xB5, customer is 0x1844
+        let p_size: u32 = 56668;
+        let p_sum: u32 = 0x00571B55;
+        let uart_mask: u8 = 0xB5;
+        let cust: u16 = 0x1844;
+
+        let encrypted = build_wakeup_packet(p_size, p_sum, uart_mask, cust);
+        let mut decrypted = [0u8; 21];
+        for i in 0..21 {
+            decrypted[i] = encrypted[i] ^ UART_WIRE_MASK;
+        }
+
+        // High nibble of 0xB5 is 0x0B, low nibble is 0x05
+        assert_eq!(decrypted[12], 0x0B);
+        assert_eq!(decrypted[13], 0x05);
+        assert_eq!(decrypted[14], CMD_IAP_PROGRAM);
     }
 
     #[test]
     fn test_dm01_header_packet_construction() {
         let p_size: u32 = 57708;
         let p_sum: u32 = 0x0059E35F;
-        let p_key: u8 = 0x67;
-        let baud_idx: u8 = 2; // 115200
+        let uart_mask: u8 = 0x89;
+        let baud_idx: u8 = 0; // 38400
 
-        let header = build_header_packet(p_size, p_sum, p_key, baud_idx);
+        let header = build_header_packet(p_size, p_sum, uart_mask, baud_idx);
         assert_eq!(header[0..2], [0xFF, 0xFF]);
         assert_eq!(
             u32::from_le_bytes([header[2], header[3], header[4], header[5]]),
@@ -600,7 +645,7 @@ mod tests {
             u32::from_le_bytes([header[6], header[7], header[8], header[9]]),
             p_sum
         );
-        assert_eq!(header[10], p_key);
+        assert_eq!(header[10], uart_mask);
         assert_eq!(header[11], baud_idx);
 
         let chk8 = calculate_checksum8(&header);

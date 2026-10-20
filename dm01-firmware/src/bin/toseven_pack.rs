@@ -834,16 +834,33 @@ fn main() {
         let dev_bytes = device_id.to_le_bytes();
         dec_hdr[0..4].copy_from_slice(&dev_bytes);
         dec_hdr[16..20].copy_from_slice(&PACK_HEADER_MAGIC);
+        let uart_mask: u8 = match target {
+            MotorTarget::Dm01 => 0x89,
+            MotorTarget::Dm02 => 0xA9,
+            MotorTarget::Unknown(_) => 0x89,
+        };
+        dec_hdr[0x17] = uart_mask;
         let len_bytes = (payload.len() as u16).to_le_bytes();
         dec_hdr[24] = len_bytes[0];
         dec_hdr[25] = len_bytes[1];
+
+        let sum = payload
+            .iter()
+            .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+        dec_hdr[26..28].copy_from_slice(&((sum >> 16) as u16).to_le_bytes());
+        dec_hdr[28..30].copy_from_slice(&(sum as u16).to_le_bytes());
+        let crc = dm01_firmware::eeprom::crc16_toseven(&dec_hdr[0..30]);
+        dec_hdr[30..32].copy_from_slice(&crc.to_le_bytes());
 
         let meta = dm01_firmware::pack::PackMetadata {
             target,
             device_id_24: device_id & 0x00FF_FFFF,
             header_xor_key: hdr_key,
             payload_xor_key: payload_key,
+            uart_mask,
             payload_len: payload.len(),
+            payload_checksum: sum,
+            header_crc: crc,
             initial_sp,
             reset_handler,
             decrypted_header: dec_hdr,
@@ -924,7 +941,7 @@ fn main() {
             payload_sum = payload_sum.wrapping_add(b as u32);
         }
 
-        let customer_num = u16::from_le_bytes([meta.decrypted_header[1], meta.decrypted_header[2]]);
+        let customer_num = meta.customer_num();
 
         println!("Target Motor:        {:?}", meta.target);
         println!(
@@ -936,6 +953,7 @@ fn main() {
         println!("Payload Byte Sum:    0x{:08X}", payload_sum);
         println!("Payload XOR Key:     0x{:02X}", meta.payload_xor_key);
         println!("Header XOR Key:      0x{:02X}", meta.header_xor_key);
+        println!("UART Mask:           0x{:02X}", meta.uart_mask);
         println!("Initial MSP:         0x{:08X}", meta.initial_sp);
         println!("Reset Handler:       0x{:08X}", meta.reset_handler);
         println!("------------------------------------------------------------");
@@ -943,7 +961,7 @@ fn main() {
         let wakeup_pkt = build_wakeup_packet(
             meta.payload_len as u32,
             payload_sum,
-            meta.payload_xor_key,
+            meta.uart_mask,
             customer_num,
         );
         println!("[Step 1] Constructed 21-byte Wakeup / Enter IAP Packet:");
@@ -954,15 +972,15 @@ fn main() {
         }
         println!("  Plaintext Decoded:         {}", hex(&unenc));
 
-        let baud_idx = 2; // 115200 Baud
+        let baud_idx = 0; // 38400 Baud (Official vendor default)
         let hdr_pkt = build_header_packet(
             meta.payload_len as u32,
             payload_sum,
-            meta.payload_xor_key,
+            meta.uart_mask,
             baud_idx,
         );
         let hdr_sum = calculate_checksum8(&hdr_pkt);
-        println!("[Step 2] Constructed 12-byte Header Packet (Baud=115200):");
+        println!("[Step 2] Constructed 12-byte Header Packet (Baud=38400):");
         println!("  Header Frame:              {}", hex(&hdr_pkt));
         println!("  Modulo-256 Checksum:       0x{:02X}", hdr_sum);
 
@@ -981,7 +999,7 @@ fn main() {
         if dry_run {
             println!("------------------------------------------------------------");
             println!("[DRY-RUN] Simulating complete IAP handshake and flash sequence:");
-            println!("  1. Probe bootloader at 115200 Baud (byte 0x02)... [OK]");
+            println!("  1. Probe bootloader at 38400 Baud (byte 0x02)... [OK]");
             println!("  2. Bootloader responds with IDENT: 0x02, 0xFD... [MCU Identified]");
             println!("  3. Send ACK (0x06) + 12-byte header frame... [OK]");
             println!("  4. Bootloader header validation... [ACK 0x06 Received]");
@@ -1008,54 +1026,60 @@ fn main() {
         } else {
             let port = port_name.unwrap();
             println!("------------------------------------------------------------");
+            println!("DISCLAIMER: This software is provided AS IS with NO WARRANTY.");
+            println!("Flashing firmware carries inherent risk. Any damage to your motor,");
+            println!("controller, battery, display, or wiring is solely your responsibility.");
+            println!("CRITICAL: Open-source firmware must NOT be installed anywhere OTHER than");
+            println!("a controlled, current-limited bench power supply (<= 1.0A). DO NOT RIDE ON A BIKE.");
+            println!("------------------------------------------------------------");
             println!("Live UART target port: {}", port);
-            println!("SAFETY NOTE: Use a 48V current-limited bench power supply for first-flash testing.");
-            let mut serial = match PosixSerialPort::open(&port, 115_200) {
+            println!(
+                "SAFETY NOTE: Use a 48V current-limited bench power supply (<= 1.0A) for testing."
+            );
+            let mut serial = match PosixSerialPort::open(&port, 38_400) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("Error opening serial port '{}': {}", port, e);
                     process::exit(1);
                 }
             };
-            if let Err(err) = execute_motor_iap_flash(
-                &mut serial,
-                &payload,
-                meta.payload_xor_key,
-                customer_num,
-                |ev| match ev {
-                    MotorFlashProgress::ProbingBootloader => {
-                        println!("  [IAP] Probing bootloader at 115200 Baud (0x02)...");
-                    }
-                    MotorFlashProgress::SendingWakeup9600 => {
-                        println!("  [IAP] Sending 21-byte wakeup frame at 9600 Baud...");
-                    }
-                    MotorFlashProgress::BootloaderIdentified => {
-                        println!("  [IAP] Bootloader identified (0x02, 0xFD).");
-                    }
-                    MotorFlashProgress::HeaderAccepted => {
-                        println!(
-                            "  [IAP] 12-byte header accepted (ACK 0x06). Streaming sectors..."
-                        );
-                    }
-                    MotorFlashProgress::SectorAcked {
-                        sector_index,
-                        total_sectors,
-                        bytes_sent,
-                        total_bytes,
-                    } => {
-                        println!(
-                            "  [IAP] Sector {:02}/{:02} ACKed ({}/{} bytes)",
-                            sector_index + 1,
+            if let Err(err) =
+                execute_motor_iap_flash(&mut serial, &payload, meta.uart_mask, customer_num, |ev| {
+                    match ev {
+                        MotorFlashProgress::ProbingBootloader => {
+                            println!("  [IAP] Probing bootloader at 38400 Baud (0x02)...");
+                        }
+                        MotorFlashProgress::SendingWakeup9600 => {
+                            println!("  [IAP] Sending 21-byte wakeup frame at 9600 Baud...");
+                        }
+                        MotorFlashProgress::BootloaderIdentified => {
+                            println!("  [IAP] Bootloader identified (0x02, 0xFD).");
+                        }
+                        MotorFlashProgress::HeaderAccepted => {
+                            println!(
+                                "  [IAP] 12-byte header accepted (ACK 0x06). Streaming sectors..."
+                            );
+                        }
+                        MotorFlashProgress::SectorAcked {
+                            sector_index,
                             total_sectors,
                             bytes_sent,
-                            total_bytes
-                        );
+                            total_bytes,
+                        } => {
+                            println!(
+                                "  [IAP] Sector {:02}/{:02} ACKed ({}/{} bytes)",
+                                sector_index + 1,
+                                total_sectors,
+                                bytes_sent,
+                                total_bytes
+                            );
+                        }
+                        MotorFlashProgress::VerifiedComplete => {
+                            println!("  [IAP] Verification complete. Flash verified successfully!");
+                        }
                     }
-                    MotorFlashProgress::VerifiedComplete => {
-                        println!("  [IAP] Final payload verification EOT (0x04) received!");
-                    }
-                },
-            ) {
+                })
+            {
                 eprintln!("Motor IAP flash failed: {:?}", err);
                 process::exit(2);
             }
@@ -1096,7 +1120,17 @@ fn main() {
                 meta.target, meta.device_id_24
             );
             println!("Header XOR Key:    0x{:02X}", meta.header_xor_key);
+            println!("Header CCITT CRC:  0x{:04X}", meta.header_crc);
             println!("Payload XOR Key:   0x{:02X}", meta.payload_xor_key);
+            println!(
+                "Payload Checksum:  0x{:08X} ({})",
+                meta.payload_checksum,
+                if meta.verify_payload_checksum(&payload) {
+                    "VALID"
+                } else {
+                    "MISMATCH"
+                }
+            );
             println!(
                 "Payload Length:    {} bytes (0x{:04X}), loaded at 0x{:08X}..0x{:08X}",
                 meta.payload_len,
