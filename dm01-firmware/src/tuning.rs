@@ -222,7 +222,7 @@ impl TuningProfile {
                 target_rpm: 35,
             },
             torque_response: TorqueResponse::Progressive,
-            ceiling_policy: AssistCeilingPolicy::StockDualCeiling,
+            ceiling_policy: AssistCeilingPolicy::UnifiedLevelCeiling,
             span_policy: TorqueSpanPolicy::AutoSpanTracking {
                 nominal_span_mv: 2300,
             },

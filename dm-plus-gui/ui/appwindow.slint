@@ -81,10 +81,8 @@ export component MainWindow inherits Window {
     in-out property <string> motor-firmware-source: "DM01 Open Firmware v0.3.0 (Built-in)";
     in-out property <string> motor-custom-pack-path: "";
     in-out property <string> motor-target: "DM01 (External 12-FET)";
-    in-out property <string> tuning-profile: "Gear-Safe Progressive (Recommended)";
-    in-out property <string> ceiling-policy: "Unified Level Ceiling (Respects Pwr%)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
-    in-out property <int> max-current-a: 30;
+    in-out property <float> max-current-a: 30.0;
     in-out property <string> street-legal-mode: "Unrestricted / Off-Road (Configurable)";
     in-out property <bool> motor-is-flashing: false;
     in-out property <float> motor-progress: 0.0;
@@ -270,15 +268,13 @@ export component MainWindow inherits Window {
                                         root.browse-motor-pack();
                                     } else if val == "DM01 Open Firmware v0.3.0 (Built-in)" {
                                         root.motor-target = "DM01 (External 12-FET)";
-                                        if root.max-current-a > 32 {
-                                            root.max-current-a = 30;
-                                        } else if root.max-current-a == 18 {
-                                            root.max-current-a = 30;
+                                        if root.max-current-a > 32.0 || root.max-current-a == 18.0 {
+                                            root.max-current-a = 30.0;
                                         }
                                     } else if val == "DM02 Open Firmware v0.3.0 (Built-in)" {
                                         root.motor-target = "DM02 (Integrated 6-FET)";
-                                        if root.max-current-a > 20 {
-                                            root.max-current-a = 18;
+                                        if root.max-current-a > 20.0 || root.max-current-a == 30.0 {
+                                            root.max-current-a = 18.0;
                                         }
                                     }
                                 }
@@ -321,7 +317,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 16px;
 
-                    // Left Card: Hardware & Tuning Profile
+                    // Left Card: Target Hardware & Legal Compliance
                     AdwCard {
                         horizontal-stretch: 1;
                         min-width: 0px;
@@ -331,7 +327,7 @@ export component MainWindow inherits Window {
                             spacing: 12px;
 
                             Text {
-                                text: "Hardware & Tuning Profile";
+                                text: "Target Hardware & Legal Compliance";
                                 font-size: 15px;
                                 font-weight: 700;
                                 color: #ffffff;
@@ -357,64 +353,6 @@ export component MainWindow inherits Window {
                                     ];
                                     current-value <=> root.motor-target;
                                     enabled: false;
-                                }
-                            }
-
-                            VerticalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Pedal Assist Tuning Profile";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
-                                }
-                                ComboBox {
-                                    model: [
-                                        "Gear-Safe Progressive (Recommended)",
-                                        "Commuter Comfort (Auto-Span)",
-                                        "Stock V6510C (Factory 60 RPM)",
-                                        "Uncapped Cadence (Metal Gear Only)"
-                                    ];
-                                    current-value <=> root.tuning-profile;
-                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
-                                }
-                                Rectangle {
-                                    height: 32px;
-                                    clip: true;
-                                    Text {
-                                        width: 100%;
-                                        height: 100%;
-                                        text: root.tuning-profile == "Gear-Safe Progressive (Recommended)" ?
-                                            "Soft torque below 18 RPM protects nylon reduction gear; full power at 35 RPM with progressive curve." :
-                                            (root.tuning-profile == "Commuter Comfort (Auto-Span)" ?
-                                                "Dynamic auto-span tracking (nominal 2.3V) with high-sensitivity response for relaxed riding." :
-                                                (root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ?
-                                                    "Warning: Immediate full torque at 5 RPM without attenuation. High risk of stripping nylon gear." :
-                                                    "Stock factory linear torque response with standard 60 RPM cadence ramp."));
-                                        font-size: 11px;
-                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b :
-                                            (root.tuning-profile == "Uncapped Cadence (Metal Gear Only)" ? #e01b24 : #9a9996);
-                                        wrap: word-wrap;
-                                        vertical-alignment: top;
-                                    }
-                                }
-                            }
-
-                            VerticalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Assist Ceiling Policy";
-                                    font-size: 13px;
-                                    font-weight: 500;
-                                    color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
-                                }
-                                ComboBox {
-                                    model: [
-                                        "Unified Level Ceiling (Respects Pwr%)",
-                                        "Stock Dual Ceiling (Torque uses Mode Max)"
-                                    ];
-                                    current-value <=> root.ceiling-policy;
-                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
                             }
 
@@ -480,6 +418,29 @@ export component MainWindow inherits Window {
                                     }
                                 }
                             }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Firmware Safety & Assist Defaults";
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    color: #77767b;
+                                }
+                                Rectangle {
+                                    height: 38px;
+                                    clip: true;
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: "Built-in firmware includes safe open defaults: Gear-Safe progressive cadence knee (soft assist below 18 RPM protecting nylon gear) & Unified Level Ceilings. Can be tuned at runtime via display proxies.";
+                                        font-size: 11px;
+                                        color: #77767b;
+                                        wrap: word-wrap;
+                                        vertical-alignment: top;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -529,7 +490,7 @@ export component MainWindow inherits Window {
                                         color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                     }
                                     Text {
-                                        text: "\{root.max-current-a} A (\{root.max-current-a * 48} W @ 48V)";
+                                        text: "\{Math.round(root.max-current-a)} A (\{Math.round(root.max-current-a) * 48} W @ 48V)";
                                         font-size: 13px;
                                         font-weight: 600;
                                         color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : (
@@ -541,7 +502,7 @@ export component MainWindow inherits Window {
                                 Slider {
                                     minimum: 5;
                                     maximum: root.motor-target == "DM02 (Integrated 6-FET)" ? 20 : 32;
-                                    value: root.max-current-a;
+                                    value <=> root.max-current-a;
                                     enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                     changed(val) => {
                                         let rounded = Math.round(val);
@@ -678,10 +639,10 @@ export component MainWindow inherits Window {
                                             root.motor-firmware-source,
                                             root.motor-custom-pack-path,
                                             root.motor-target,
-                                            root.tuning-profile,
+                                            root.street-legal-mode,
                                             root.selected-motor-port,
                                             true, // dry_run
-                                            root.max-current-a,
+                                            Math.round(root.max-current-a),
                                             root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
                                         );
                                     }
@@ -696,10 +657,10 @@ export component MainWindow inherits Window {
                                             root.motor-firmware-source,
                                             root.motor-custom-pack-path,
                                             root.motor-target,
-                                            root.tuning-profile,
+                                            root.street-legal-mode,
                                             root.selected-motor-port,
                                             false, // live flash
-                                            root.max-current-a,
+                                            Math.round(root.max-current-a),
                                             root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
                                         );
                                     }

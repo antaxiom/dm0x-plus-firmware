@@ -313,14 +313,14 @@ fn main() -> Result<(), slint::PlatformError> {
                     if let Ok(meta) = parse_pack_metadata(&bytes) {
                         let target_str = match meta.target {
                             dm01_firmware::pack::MotorTarget::Dm01 => {
-                                if ui.get_max_current_a() > 32 {
-                                    ui.set_max_current_a(30);
+                                if ui.get_max_current_a() > 32.0 {
+                                    ui.set_max_current_a(30.0);
                                 }
                                 "DM01 (External 12-FET)"
                             }
                             dm01_firmware::pack::MotorTarget::Dm02 => {
-                                if ui.get_max_current_a() > 20 {
-                                    ui.set_max_current_a(18);
+                                if ui.get_max_current_a() > 20.0 {
+                                    ui.set_max_current_a(18.0);
                                 }
                                 "DM02 (Integrated 6-FET)"
                             }
@@ -513,7 +513,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // Callback: Flash Motor (Handles both Dry-Run and Live Hardware Flash in a background thread)
     let handle_weak = main_window.as_weak();
     main_window.on_flash_motor(
-        move |source_str, custom_path_str, target_str, _profile_str, port_str, is_dry_run, _max_amps, _battery_volts| {
+        move |source_str, custom_path_str, target_str, _street_legal_str, port_str, is_dry_run, _max_amps, _battery_volts| {
             if let Some(ui) = handle_weak.upgrade() {
                 let port = port_str.as_str().trim().to_string();
                 let source = source_str.as_str().to_string();
