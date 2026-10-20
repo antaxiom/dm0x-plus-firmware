@@ -111,19 +111,45 @@ Reverse engineering of the display parameter table (`0x0102B834..0x0102B8E8` in 
 ## 4. Button Combos, Diagnostic Menus & Default PINs
 
 ### 4.1 Button State Decoder (`0x0100EF00` & `0x0100F700`)
-The display samples analog resistor-ladder button inputs through ADC debounce filters:
-* `Key 0x01`: Power Button
-* `Key 0x02`: Up Arrow Button
-* `Key 0x03`: Down Arrow Button
-* `Key 0x04`: Info / Mode Button ("I")
+The display samples analog resistor-ladder button inputs through ADC debounce filters rather than discrete GPIO lines. The firmware reads `ADC_CH` and compares the raw voltage reading against calibrated windows (`AD=%4d, Cnt=%2d`):
+* **`Up&Down` (`AD ≈ 1200 mV`):** Simultaneous hold of `+` and `-` buttons (enters settings menu after 2000 ms debounce).
+* **`Up` (`AD ≈ 1650 mV`):** `+` button (increases assist level, increments value; long-press toggles headlight).
+* **`Down&Info` (`AD ≈ 2100 mV`):** Simultaneous hold of `-` and `Info/Power` (resets trip odometer).
+* **`Info` (`AD ≈ 2600 mV`):** `Power / Mode` button (toggles display modes: ODO, TRIP, TIME, MAX, AVG; short-press confirms menu selection).
+* **`Down` (`AD ≈ 3100 mV`):** `-` button (decreases assist level, decrements value; long-press engages 6 km/h Walk Assist).
+* **Idle (No Buttons Pressed):** VDD pull-up (`AD ≈ 3300 mV`).
 
-### 4.2 Factory Key Combinations
+### 4.2 Factory Key Combinations & Diagnostic Pages
 * **Main Settings Menu:** Long-press **Power** to power on; as soon as the screen lights up, simultaneously hold **Power + Up** until the PIN entry prompt appears. Default user PIN is **`1234`**.
 * **Advanced Settings Menu (Pre-October 2024 firmware):** In Main Settings, scroll to `"Unit"`, then hold **Up + Down** together for 3 seconds. Enter PIN **`1234`**.
-* **Hidden Engineering Diagnostic Screen ("Test"):** Repeatedly press **Power** until `"Test"` appears at the bottom bar, then press **Up** to enter.
+* **Hidden Engineering Diagnostic Screen ("Test" / Live Sensor View):** Repeatedly press **Power** until `"Test"` appears at the bottom bar, then press **Up** to enter.
   * Shows live battery voltage (0.1V resolution), controller temperature (°C), live phase current (A), cadence (RPM), torque sensor output (mV), and throttle ADC (mV).
+  * Real-time commutation observer view: displays active Hall sector sequence (`HALL=F-%d%d%d%d%d%d` forward / `HALL=B-%d%d%d%d%d%d` backward) and sensorless fallback observer (`NOHALL=F-...`).
+  * Live sensor ratio line: `PAS=%d/THR=%d/TQS=%d` (Crank Cadence RPM, Throttle ADC mV, and Torque Strain Gauge mV).
 * **Timer Reset:** Hold **Power + Down** simultaneously for 2 seconds.
 * **Firmware Version Display:** Scroll bottom bar to `"Info"`, then press **Down**.
+
+### 4.3 Complete Decompiled Engineering Parameter Tree
+Forensic disassembly of the display firmware strings and menu dispatch tables (`0x0102B834..0x0102E500`) revealed the complete internal parameter tree exposed to authorized technicians:
+
+1. **`Speed&Power` Sub-Menu:**
+   - `Spd L1..L9`: Per-level speed limit in 1.0 km/h increments (`Spd L%d=%2d kmh`).
+   - `pwr L1..L9`: Per-level power percentage cap (`pwr L%d=%3d %%`, scales mode current for Cadence PAS and Throttle).
+   - `EAssist-1..9`: Per-level torque effort multiplier (`EAssist-%d=%3d %%`, multiplies human rider wattage).
+2. **`Current PID` (FOC Tuning) Sub-Menu:**
+   - `CurrentKp` / `CurrentKi`: Direct- and quadrature-axis current loop PI gains.
+   - `SpeedKp` / `SpeedKi` / `Speed Filter`: Outer velocity control loop gains.
+   - `FluxWeakVoltage` (`90..98%`): Field-weakening threshold voltage percentage.
+   - `FluxWeakCurrent` (`0..10 A`): Demagnetizing d-axis flux-weakening current cap.
+3. **`Motor & Electrical Limits` Sub-Menu:**
+   - `MaxCurrentECO`, `MaxCurrentCITY`, `MaxCurrentSPORT`: Continuous current ceilings per riding mode.
+   - `CurrentOffest(a)`: Torque startup initial step current (`0.5 A` stock default).
+   - `LowCutVoltage` (`LVC`) / `StandardVoltge`: Low-voltage cutoff and battery pack selection (`24V`, `36V`, `48V`, `52V`).
+   - `Capacity=0%..100%`: 5-point state-of-charge (SOC) voltage lookup table.
+   - `StartMinVoltage%` / `StartSpeed(rpm)`: Minimum stall duty and initial rotation threshold.
+   - `RimSpeedSensor` / `SpeedSensorFail`: Toggles external reed switch vs. universal sensorless speed estimation.
+   - `BrakeLight`: Active-high vs. active-low brake light driver mode.
+   - `AutoPowerOff`: Idle shutdown timeout in minutes (`0..10`).
 
 ---
 

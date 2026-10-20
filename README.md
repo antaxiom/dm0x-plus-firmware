@@ -78,10 +78,11 @@ Here is the verified functionality available in this repository:
      - **Flash Page 127 Persistence Driver:** Unlocks, erases, and programs Page 127 (`0x0801FC00`), allowing runtime settings and display parameters to survive power cycles with verified 5-block XOR `0xA5` encryption and CRC-16 integrity.
      - **Hardware Overcurrent Break Protection:** Configures `TIM1_BDTR.BKE` break input on PB12 to immediately disable all 6 MOSFET gates in < 50 ns upon comparator trip.
      - **Hardware Watchdog (`IWDG`):** 500 ms safety trip window refreshed deterministically inside the 1 ms SysTick control loop.
+     - **Automated Motor Self-Commissioning (`calibration.rs`):** Safe, low-power (1.5 A) automated self-commissioning procedure executing 0° DC rotor alignment, 120° Hall commutation sequence verification, electrical offset angle calculation (`angle_offset_deg`), phase swap detection, and coil resistance sanity check.
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 67 automated unit, integration, and end-to-end physical simulation tests running in CI (58 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 72 automated unit, integration, and end-to-end physical simulation tests running in CI (63 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
 
 6. **Native Serial Transport & Cross-Platform Parity:**
@@ -89,8 +90,10 @@ Here is the verified functionality available in this repository:
    - Complete modem line control (DTR and RTS) for bootloader reset and MegaHunt USB CDC-ACM display bootloader connection requirements.
    - Hardware and kernel FIFO queue flushing before baud rate transitions and probe sequences to purge leftover telemetry frames.
 
-7. **Safety & Bench Bring-up Runbook:**
-   - Comprehensive bench bring-up guide ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md)) detailing Julet 5-pin programming pinout, SWD recovery points, and 48V current-limited bench power supply procedures.
+7. **Documentation & Protocol Specifications:**
+   - **Bench Bring-up & Diagnostics:** Hardware pinout runbooks ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md), [`Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md`](Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md)).
+   - **Display Firmware & Unlock Specification:** ([`Documentation/ToSeven_Display_Firmware_Architecture.md`](Documentation/ToSeven_Display_Firmware_Architecture.md)) detailing analog resistor ladder button decoder, 13 throttle modes, 3-gate menu lockout bypass, and engineering parameter trees.
+   - **Bluetooth Low Energy (BLE) & Mobile App Protocol:** ([`Documentation/ToSeven_Bluetooth_and_App_Protocol.md`](Documentation/ToSeven_Bluetooth_and_App_Protocol.md)) documenting GATT services (`0000FFF0..2`), `0x7E..0x7F` packet framing with `0x3C 0xC3` sync, diagnostic telemetry packets, and `CTLCFG` EEPROM reflection fields.
 
 ---
 

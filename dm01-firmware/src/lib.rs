@@ -18,6 +18,7 @@
 //! - [`sha256`] — Dependency-free `no_std` SHA-256.
 //! - [`config`], [`sensors`], [`control`], [`thermal`], [`battery`], [`faults`], [`hal`] — High-level hardware abstraction, telemetry, and motor controller state machines.
 pub mod battery;
+pub mod calibration;
 pub mod config;
 pub mod control;
 #[cfg(feature = "std")]
