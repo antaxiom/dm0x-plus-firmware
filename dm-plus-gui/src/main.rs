@@ -144,12 +144,34 @@ fn main() -> Result<(), slint::PlatformError> {
     let handle_weak = main_window.as_weak();
     main_window.on_refresh_ports(move || {
         if let Some(ui) = handle_weak.upgrade() {
-            let (ports_model, initial_port) = query_ports_model();
+            let ports = list_serial_ports();
+            let (ports_model, initial_port) = if ports.is_empty() {
+                let default_str = SharedString::from("No serial devices detected");
+                let items = vec![default_str.clone()];
+                (ModelRc::new(VecModel::from(items)), default_str)
+            } else {
+                let items: Vec<SharedString> = ports
+                    .iter()
+                    .map(|p| SharedString::from(p.as_str()))
+                    .collect();
+                let first = items[0].clone();
+                (ModelRc::new(VecModel::from(items)), first)
+            };
             ui.set_available_ports(ports_model);
-            if ui.get_selected_motor_port().is_empty() {
+
+            let cur_motor = ui.get_selected_motor_port();
+            if cur_motor.is_empty()
+                || cur_motor == "No serial devices detected"
+                || !ports.iter().any(|p| p == cur_motor.as_str())
+            {
                 ui.set_selected_motor_port(initial_port.clone());
             }
-            if ui.get_selected_display_port().is_empty() {
+
+            let cur_display = ui.get_selected_display_port();
+            if cur_display.is_empty()
+                || cur_display == "No serial devices detected"
+                || !ports.iter().any(|p| p == cur_display.as_str())
+            {
                 ui.set_selected_display_port(initial_port);
             }
         }

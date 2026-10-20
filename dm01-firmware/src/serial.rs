@@ -37,6 +37,82 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+
+#[cfg(windows)]
+#[repr(C)]
+struct DCB {
+    pub DCBlength: u32,
+    pub BaudRate: u32,
+    pub Flags: u32,
+    pub wReserved: u16,
+    pub XonLim: u16,
+    pub XoffLim: u16,
+    pub ByteSize: u8,
+    pub Parity: u8,
+    pub StopBits: u8,
+    pub XonChar: u8,
+    pub XoffChar: u8,
+    pub ErrorChar: u8,
+    pub EofChar: u8,
+    pub EvtChar: u8,
+    pub wReserved1: u16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct COMMTIMEOUTS {
+    pub ReadIntervalTimeout: u32,
+    pub ReadTotalTimeoutMultiplier: u32,
+    pub ReadTotalTimeoutConstant: u32,
+    pub WriteTotalTimeoutMultiplier: u32,
+    pub WriteTotalTimeoutConstant: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn QueryDosDeviceW(lpDeviceName: *const u16, lpTargetPath: *mut u16, ucchMax: u32) -> u32;
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *mut std::ffi::c_void,
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn GetCommState(hFile: *mut std::ffi::c_void, lpDCB: *mut DCB) -> i32;
+    fn SetCommState(hFile: *mut std::ffi::c_void, lpDCB: *const DCB) -> i32;
+    fn SetCommTimeouts(hFile: *mut std::ffi::c_void, lpCommTimeouts: *const COMMTIMEOUTS) -> i32;
+    fn EscapeCommFunction(hFile: *mut std::ffi::c_void, dwFunc: u32) -> i32;
+    fn PurgeComm(hFile: *mut std::ffi::c_void, dwFlags: u32) -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "advapi32")]
+extern "system" {
+    fn RegOpenKeyExW(
+        hKey: *mut std::ffi::c_void,
+        lpSubKey: *const u16,
+        ulOptions: u32,
+        samDesired: u32,
+        phkResult: *mut *mut std::ffi::c_void,
+    ) -> i32;
+    fn RegEnumValueW(
+        hKey: *mut std::ffi::c_void,
+        dwIndex: u32,
+        lpValueName: *mut u16,
+        lpcchValueName: *mut u32,
+        lpReserved: *mut u32,
+        lpType: *mut u32,
+        lpData: *mut u8,
+        lpcbData: *mut u32,
+    ) -> i32;
+    fn RegCloseKey(hKey: *mut std::ffi::c_void) -> i32;
+}
+
 /// Transport abstraction for bidirectional serial / USB-CDC communication.
 pub trait SerialTransport {
     /// Configures the serial line speed in bits per second (e.g. `9600` or `115200`) in 8N1 raw mode.
@@ -84,13 +160,6 @@ pub trait SerialTransport {
         }
         Ok(())
     }
-}
-
-/// Zero-dependency POSIX serial port driver for macOS and Linux.
-pub struct PosixSerialPort {
-    path: String,
-    file: File,
-    baud_rate: u32,
 }
 
 #[cfg(unix)]
@@ -163,15 +232,86 @@ fn configure_raw_termios(fd: std::os::unix::io::RawFd, baud: u32) -> io::Result<
     Ok(())
 }
 
+#[cfg(windows)]
+fn configure_windows_comm(handle: RawHandle, baud: u32) -> io::Result<()> {
+    unsafe {
+        let mut dcb = std::mem::zeroed::<DCB>();
+        dcb.DCBlength = std::mem::size_of::<DCB>() as u32;
+        if GetCommState(handle as _, &mut dcb) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        dcb.BaudRate = baud;
+        dcb.ByteSize = 8;
+        dcb.Parity = 0; // NOPARITY
+        dcb.StopBits = 0; // ONESTOPBIT
+                          // Flags: fBinary = 1 (bit 0), fDtrControl = 1 (DTR_CONTROL_ENABLE, bits 4..5), fRtsControl = 1 (RTS_CONTROL_ENABLE, bits 12..13)
+                          // 1 | 16 | 4096 = 0x1011
+        dcb.Flags = 0x1011;
+
+        if SetCommState(handle as _, &dcb) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Configure non-blocking read timeouts: ReadIntervalTimeout = MAXDWORD
+        // causes ReadFile to return immediately with whatever bytes are in the input buffer.
+        let mut timeouts = std::mem::zeroed::<COMMTIMEOUTS>();
+        timeouts.ReadIntervalTimeout = 0xFFFFFFFF;
+        timeouts.ReadTotalTimeoutMultiplier = 0;
+        timeouts.ReadTotalTimeoutConstant = 0;
+        timeouts.WriteTotalTimeoutMultiplier = 0;
+        timeouts.WriteTotalTimeoutConstant = 5000;
+
+        if SetCommTimeouts(handle as _, &timeouts) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Assert DTR and RTS modem control lines
+        const SETDTR: u32 = 5;
+        const SETRTS: u32 = 3;
+        EscapeCommFunction(handle as _, SETDTR);
+        EscapeCommFunction(handle as _, SETRTS);
+
+        // Purge driver FIFO queues
+        const PURGE_TXABORT: u32 = 0x0001;
+        const PURGE_RXABORT: u32 = 0x0002;
+        const PURGE_TXCLEAR: u32 = 0x0004;
+        const PURGE_RXCLEAR: u32 = 0x0008;
+        PurgeComm(
+            handle as _,
+            PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR,
+        );
+    }
+    Ok(())
+}
+
+/// Zero-dependency native serial port driver for macOS, Linux, and Windows.
+pub struct PosixSerialPort {
+    path: String,
+    file: File,
+    baud_rate: u32,
+}
+
+pub type NativeSerialPort = PosixSerialPort;
+
 impl PosixSerialPort {
-    /// Opens a serial device node (e.g. `/dev/cu.usbserial-110` or `/dev/ttyUSB0`) in non-blocking
+    /// Opens a serial device node (e.g. `/dev/cu.usbserial-110`, `/dev/ttyUSB0`, or `COM3`) in non-blocking
     /// raw 8N1 mode and configures the initial baud rate.
     /// On macOS, automatically converts `/dev/tty.*` to `/dev/cu.*` to avoid DCD carrier hangs.
+    /// On Windows, automatically ensures `\\.\` prefix for ports COM1..COM255.
     pub fn open(path: &str, initial_baud: u32) -> io::Result<Self> {
-        let canonical_path = if cfg!(target_os = "macos") && path.starts_with("/dev/tty.") {
-            path.replace("/dev/tty.", "/dev/cu.")
+        let trimmed = path.trim();
+        let canonical_path = if cfg!(target_os = "macos") && trimmed.starts_with("/dev/tty.") {
+            trimmed.replace("/dev/tty.", "/dev/cu.")
+        } else if cfg!(windows) {
+            let upper = trimmed.to_ascii_uppercase();
+            if !trimmed.starts_with(r"\\.\") && upper.starts_with("COM") {
+                format!(r"\\.\{}", trimmed)
+            } else {
+                trimmed.to_string()
+            }
         } else {
-            path.to_string()
+            trimmed.to_string()
         };
 
         #[cfg(unix)]
@@ -184,14 +324,46 @@ impl PosixSerialPort {
                 .open(&canonical_path)?
         };
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let file = {
+            let wide_path: Vec<u16> = canonical_path
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+
+            const GENERIC_READ: u32 = 0x80000000;
+            const GENERIC_WRITE: u32 = 0x40000000;
+            const OPEN_EXISTING: u32 = 3;
+            const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+            const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+            let handle = unsafe {
+                CreateFileW(
+                    wide_path.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0, // Exclusive access (standard for serial ports on Windows)
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+
+            unsafe { std::fs::File::from_raw_handle(handle as RawHandle) }
+        };
+
+        #[cfg(not(any(unix, windows)))]
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&canonical_path)?;
 
         let mut port = Self {
-            path: canonical_path,
+            path: trimmed.to_string(),
             file,
             baud_rate: initial_baud,
         };
@@ -208,13 +380,41 @@ impl PosixSerialPort {
     }
 }
 
+/// Helper to verify if a string is a valid Windows COM port name (e.g. `COM1`, `COM3`, `\\.\COM10`).
+pub fn is_com_port_name(s: &str) -> bool {
+    let s = s.strip_prefix(r"\\.\").unwrap_or(s);
+    let upper = s.to_ascii_uppercase();
+    if upper.starts_with("COM") && upper.len() > 3 {
+        upper[3..].chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
 /// Prioritizes and sorts serial port paths so that active physical USB serial dongles
-/// (`cu.usbserial-*`, `cu.wchusbserial*`, `cu.usbmodem*`, `ttyUSB*`, `ttyACM*`) appear at index 0.
+/// (`cu.usbserial-*`, `cu.wchusbserial*`, `cu.usbmodem*`, `ttyUSB*`, `ttyACM*`, Windows `COM*`) appear at index 0.
 pub fn sort_serial_ports(ports: &mut [String]) {
     ports.sort_by(|a, b| {
+        let com_num = |s: &str| -> Option<u32> {
+            let s = s.strip_prefix(r"\\.\").unwrap_or(s);
+            let upper = s.to_ascii_uppercase();
+            if upper.starts_with("COM")
+                && upper.len() > 3
+                && upper[3..].chars().all(|c| c.is_ascii_digit())
+            {
+                upper[3..].parse::<u32>().ok()
+            } else {
+                None
+            }
+        };
+
+        if let (Some(na), Some(nb)) = (com_num(a), com_num(b)) {
+            return na.cmp(&nb);
+        }
+
         let rank = |s: &str| -> u8 {
             let lower = s.to_ascii_lowercase();
-            if lower.contains("cu.usbserial") || lower.contains("ttyusb") {
+            if lower.contains("cu.usbserial") || lower.contains("ttyusb") || is_com_port_name(s) {
                 0
             } else if lower.contains("wch") {
                 1
@@ -230,7 +430,114 @@ pub fn sort_serial_ports(ports: &mut [String]) {
     });
 }
 
-/// Scans the system for connected USB serial ports (macOS `/dev/cu.usb*`, Linux `/dev/ttyUSB*`, etc.).
+#[cfg(windows)]
+fn list_windows_serial_ports(ports: &mut Vec<String>) {
+    // 1. Check Windows Registry: HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM
+    // Windows populates this key for every active serial device (FTDI, CH340, CP210x, CDC).
+    list_ports_from_registry(ports);
+
+    // 2. Query all MS-DOS devices using QueryDosDeviceW(NULL, ...)
+    let mut buffer = vec![0u16; 32768];
+    let ret =
+        unsafe { QueryDosDeviceW(std::ptr::null(), buffer.as_mut_ptr(), buffer.len() as u32) };
+    if ret > 0 {
+        let mut start = 0;
+        for i in 0..ret as usize {
+            if buffer[i] == 0 {
+                if i > start {
+                    if let Ok(name) = String::from_utf16(&buffer[start..i]) {
+                        let clean = name.trim().to_ascii_uppercase();
+                        if is_com_port_name(&clean)
+                            && !ports.iter().any(|p| p.eq_ignore_ascii_case(&clean))
+                        {
+                            ports.push(clean);
+                        }
+                    }
+                }
+                start = i + 1;
+            }
+        }
+    }
+
+    // 3. Fallback direct probe COM1..COM64 in case QueryDosDeviceW(NULL) was truncated
+    for i in 1..=64 {
+        let com = format!("COM{}", i);
+        if !ports.iter().any(|p| p.eq_ignore_ascii_case(&com)) {
+            let wide: Vec<u16> = com.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut target = [0u16; 256];
+            let ret =
+                unsafe { QueryDosDeviceW(wide.as_ptr(), target.as_mut_ptr(), target.len() as u32) };
+            if ret > 0 {
+                ports.push(com);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn list_ports_from_registry(ports: &mut Vec<String>) {
+    const HKEY_LOCAL_MACHINE: *mut std::ffi::c_void = 0x80000002 as usize as *mut std::ffi::c_void;
+    const KEY_READ: u32 = 0x20019;
+    const ERROR_SUCCESS: i32 = 0;
+    const REG_SZ: u32 = 1;
+
+    let subkey: Vec<u16> = "HARDWARE\\DEVICEMAP\\SERIALCOMM\0".encode_utf16().collect();
+    let mut hkey: *mut std::ffi::c_void = std::ptr::null_mut();
+
+    unsafe {
+        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut hkey)
+            == ERROR_SUCCESS
+        {
+            let mut index = 0u32;
+            let mut value_name = [0u16; 256];
+            let mut data = [0u8; 512];
+
+            loop {
+                let mut value_name_len = value_name.len() as u32;
+                let mut data_len = data.len() as u32;
+                let mut val_type = 0u32;
+
+                let status = RegEnumValueW(
+                    hkey,
+                    index,
+                    value_name.as_mut_ptr(),
+                    &mut value_name_len,
+                    std::ptr::null_mut(),
+                    &mut val_type,
+                    data.as_mut_ptr(),
+                    &mut data_len,
+                );
+
+                if status != ERROR_SUCCESS {
+                    break;
+                }
+
+                if val_type == REG_SZ && data_len >= 2 {
+                    let u16_slice = std::slice::from_raw_parts(
+                        data.as_ptr() as *const u16,
+                        (data_len / 2) as usize,
+                    );
+                    let end = u16_slice
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(u16_slice.len());
+                    if let Ok(port_str) = String::from_utf16(&u16_slice[..end]) {
+                        let clean = port_str.trim().to_ascii_uppercase();
+                        if is_com_port_name(&clean)
+                            && !ports.iter().any(|p| p.eq_ignore_ascii_case(&clean))
+                        {
+                            ports.push(clean);
+                        }
+                    }
+                }
+                index += 1;
+            }
+            RegCloseKey(hkey);
+        }
+    }
+}
+
+/// Scans the system for connected USB serial ports (macOS `/dev/cu.usb*`, Linux `/dev/ttyUSB*`, Windows `COM*`, etc.).
 pub fn list_serial_ports() -> Vec<String> {
     let mut ports = Vec::new();
     #[cfg(unix)]
@@ -266,6 +573,10 @@ pub fn list_serial_ports() -> Vec<String> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        list_windows_serial_ports(&mut ports);
+    }
     sort_serial_ports(&mut ports);
     ports
 }
@@ -277,6 +588,10 @@ impl SerialTransport for PosixSerialPort {
         {
             configure_raw_termios(self.file.as_raw_fd(), baud)?;
         }
+        #[cfg(windows)]
+        {
+            configure_windows_comm(self.file.as_raw_handle(), baud)?;
+        }
         Ok(())
     }
 
@@ -285,6 +600,17 @@ impl SerialTransport for PosixSerialPort {
         {
             unsafe {
                 libc::tcflush(self.file.as_raw_fd(), libc::TCIFLUSH);
+            }
+        }
+        #[cfg(windows)]
+        {
+            unsafe {
+                const PURGE_RXCLEAR: u32 = 0x0008;
+                const PURGE_RXABORT: u32 = 0x0002;
+                PurgeComm(
+                    self.file.as_raw_handle() as _,
+                    PURGE_RXCLEAR | PURGE_RXABORT,
+                );
             }
         }
         // Drain any pending user-space bytes in the pipeline
@@ -1204,5 +1530,34 @@ mod tests {
         assert_eq!(list[2], "/dev/cu.wchusbserial1420");
         // usbmodem (display CDC) has rank 2
         assert_eq!(list[3], "/dev/cu.usbmodem1101");
+    }
+
+    #[test]
+    fn test_sort_windows_com_ports_numerically() {
+        let mut list = vec![
+            "COM10".to_string(),
+            "COM1".to_string(),
+            "COM21".to_string(),
+            "COM3".to_string(),
+            r"\\.\COM2".to_string(),
+        ];
+        sort_serial_ports(&mut list);
+        assert_eq!(list[0], "COM1");
+        assert_eq!(list[1], r"\\.\COM2");
+        assert_eq!(list[2], "COM3");
+        assert_eq!(list[3], "COM10");
+        assert_eq!(list[4], "COM21");
+    }
+
+    #[test]
+    fn test_is_com_port_name() {
+        assert!(is_com_port_name("COM1"));
+        assert!(is_com_port_name("COM3"));
+        assert!(is_com_port_name("COM10"));
+        assert!(is_com_port_name("com12"));
+        assert!(is_com_port_name(r"\\.\COM4"));
+        assert!(!is_com_port_name("COM"));
+        assert!(!is_com_port_name("COMX"));
+        assert!(!is_com_port_name("/dev/ttyUSB0"));
     }
 }

@@ -27,7 +27,7 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.4` - Released Public Beta)
+## What Is Implemented Right Now (`v0.3.0-beta.5` - Hotfix Beta Release)
 
 Rather than relying on future promises, here is the verified functionality available today in this repository:
 
@@ -40,7 +40,7 @@ Rather than relying on future promises, here is the verified functionality avail
    - Native system file pickers (`rfd`) with enforced extension filters (`.Pack` and `.hex`).
    - Balanced 2-column card geometry across both Motor Controller and Display tabs, eliminating empty whitespace padding and aligning the Flashing window dimensions and button styling identically across both views.
    - Dedicated "Save Patched .hex..." export button in the Display Patcher card to generate and save unlocked Intel HEX firmware offline without requiring serial hardware.
-   - Synchronized ISP and Motor Flashing windows with uniform port selectors, clear progress feedback, and non-blocking asynchronous serial engine with connection timeouts.
+   - Synchronized ISP and Motor Flashing windows with uniform port selectors, dynamic port auto-refresh on device plug/unplug, clear progress feedback, and non-blocking asynchronous serial engine with connection timeouts.
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
 
 2. **Verified Motor Controller IAP Flasher & Container Engine (`toseven_pack` & GUI):**
@@ -84,11 +84,13 @@ Rather than relying on future promises, here is the verified functionality avail
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 55 automated unit, integration, and end-to-end physical simulation tests running in CI (46 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 57 automated unit, integration, and end-to-end physical simulation tests running in CI (48 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
 
 6. **Native Serial Transport & Cross-Platform Parity:**
-   - Direct POSIX `termios` raw 8N1 driver with automatic `/dev/tty.*` to `/dev/cu.*` callout node conversion, eliminating fragile external `stty` process spawning.
+   - **Cross-Platform Driver Architecture:** Unified native serial engine (`PosixSerialPort` / `NativeSerialPort`) operating seamlessly on macOS, Linux, and Windows.
+   - **Windows Serial Engine:** Multi-tier COM port enumeration querying Windows Registry (`HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`), `QueryDosDeviceW` MS-DOS device mapping, and direct `COM1..COM64` probing. Complete Win32 `DCB` configuration, non-blocking `COMMTIMEOUTS` (immediate return), modem line control (`SETDTR`/`SETRTS`), buffer purges (`PurgeComm`), and universal `\\.\COMx` support for ports `COM1` through `COM255`.
+   - **macOS & Linux Engine:** Direct POSIX `termios` raw 8N1 driver with automatic `/dev/tty.*` to `/dev/cu.*` callout node conversion, eliminating fragile external `stty` process spawning.
    - Dedicated `IOSSIOSPEED` custom-baud IOKit `ioctl` support on macOS for accurate line rates across all USB-serial converter chipsets (CH340, FTDI, CP2102).
    - Modem line state assertion (`TIOCMBIS` with `DTR` and `RTS`), satisfying the MegaHunt USB CDC-ACM display bootloader connection requirements and providing MCU reset pulse support.
    - Hardware and kernel FIFO queue flushing (`tcflush`) before baud rate transitions and probe sequences to purge leftover telemetry frames, ensuring 100% handshake parity with official Windows tools.
