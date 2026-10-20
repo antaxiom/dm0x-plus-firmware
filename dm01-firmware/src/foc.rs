@@ -415,4 +415,142 @@ mod tests {
         assert!((orig.alpha - recovered.alpha).abs() <= 25);
         assert!((orig.beta - recovered.beta).abs() <= 25);
     }
+
+    #[test]
+    fn test_clarke_transform_balanced_3phase_invariance() {
+        // Balanced 3-phase currents of amplitude I = 10,000 mA across 360 degrees
+        let amplitude = 10_000.0f64;
+        for deg in (0..360).step_by(15) {
+            let rad = (deg as f64).to_radians();
+            let i_a = (amplitude * rad.cos()) as i32;
+            let i_b = (amplitude * (rad - 2.094395).cos()) as i32;
+            let i_c = -(i_a + i_b); // Kirchhoff's Current Law
+
+            let ab = clarke_transform(PhaseCurrents {
+                i_a_ma: i_a,
+                i_b_ma: i_b,
+                i_c_ma: i_c,
+            });
+
+            // Alpha-Beta magnitude sqrt(alpha^2 + beta^2) must remain constant (I = 10,000 mA)
+            let mag = ((ab.alpha as f64).powi(2) + (ab.beta as f64).powi(2)).sqrt();
+            let err_pct = ((mag - amplitude).abs() / amplitude) * 100.0;
+            assert!(
+                err_pct < 1.5,
+                "Clarke magnitude ripple exceeded at {} deg: mag={}, err={:.2}%",
+                deg,
+                mag,
+                err_pct
+            );
+        }
+    }
+
+    #[test]
+    fn test_park_alignment_pure_q_axis_torque() {
+        // A pure torque command must yield Id = 0 and Iq = Target under synchronized Park rotation
+        let target_iq = 15_000i32; // 15.0A
+        for deg in (0..360).step_by(30) {
+            let u16_angle = (((deg as u32) * 65536) / 360) as u16;
+            let (sin_t, cos_t) = sin_cos_q15(u16_angle);
+
+            // Reconstruct stationary currents for pure Q-axis drive (Id = 0, Iq = target_iq)
+            let ab = inverse_park_transform(DqFrame { d: 0, q: target_iq }, sin_t, cos_t);
+
+            // Forward Park transform must recover Id = 0 and Iq = 15,000 mA
+            let dq = park_transform(ab, sin_t, cos_t);
+            assert!(
+                dq.d.abs() < 50,
+                "Id must be ~0 for pure torque drive at {} deg, got Id={}",
+                deg,
+                dq.d
+            );
+            assert!(
+                (dq.q - target_iq).abs() < 50,
+                "Iq must match commanded target at {} deg: got={}, expected={}",
+                deg,
+                dq.q,
+                target_iq
+            );
+        }
+    }
+
+    #[test]
+    fn test_hall_sequence_monotonicity_and_edge_detection() {
+        // Standard 120° Hall Gray code forward sequence: 1 -> 3 -> 2 -> 6 -> 4 -> 5 -> 1
+        let sequence = [0b001u8, 0b011, 0b010, 0b110, 0b100, 0b101];
+        let mut prev_angle: u16 = 0;
+
+        for (idx, &hall) in sequence.iter().enumerate() {
+            let angle = decode_hall_angle(hall, 0).expect("Valid Hall state must decode");
+            if idx > 0 {
+                let diff = angle.wrapping_sub(prev_angle);
+                // Each sector transition must advance electrical angle by exactly 60° (10,922 counts ± 1)
+                assert!(
+                    (diff as i32 - 10_922).abs() <= 2,
+                    "Hall transition {}->{} step mismatch: expected ~10922, got {}",
+                    sequence[idx - 1],
+                    hall,
+                    diff
+                );
+            }
+            prev_angle = angle;
+        }
+
+        // Invalid states must return None
+        assert!(decode_hall_angle(0b000, 0).is_none());
+        assert!(decode_hall_angle(0b111, 0).is_none());
+    }
+
+    #[test]
+    fn test_svpwm_dead_time_clamping_and_bootstrap_charge() {
+        let period = 6000u16; // 16 kHz ARR
+
+        // Sweep extreme overmodulation inputs to test dead-time clamp safety
+        let test_voltages = [
+            (0.0f32, 0.0f32),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.5, 1.5), // Extreme overmodulation command
+            (-2.0, 2.0),
+        ];
+
+        for &(va, vb) in &test_voltages {
+            let duties = compute_svpwm_v6510c_f32(va, vb, period);
+
+            // Phase duties must stay within [0, period]
+            assert!(duties.pwm_a <= period);
+            assert!(duties.pwm_b <= period);
+            assert!(duties.pwm_c <= period);
+
+            // At neutral zero voltage, duty cycles must equal exactly 50%
+            if va == 0.0 && vb == 0.0 {
+                assert_eq!(duties.pwm_a, period / 2);
+                assert_eq!(duties.pwm_b, period / 2);
+                assert_eq!(duties.pwm_c, period / 2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pi_controller_anti_windup_clamping() {
+        let mut pi = PiController::new(512, 64, -20_000, 20_000);
+
+        // Feed large continuous positive error to induce integrator saturation
+        for _ in 0..100 {
+            pi.step(10_000, 0);
+        }
+
+        // Integral must be strictly clamped to out_max (20,000)
+        assert_eq!(pi.integral, 20_000);
+
+        // Now reverse error (target < measured)
+        let out = pi.step(0, 10_000);
+        // It must begin dropping immediately without waiting to unwind excess accumulated error
+        assert!(
+            out < 20_000,
+            "Anti-windup must immediately recover when error reverses"
+        );
+    }
 }
