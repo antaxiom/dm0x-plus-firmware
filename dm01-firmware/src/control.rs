@@ -58,6 +58,9 @@ pub struct Dm01Controller {
     pub v6510c_torque: V6510cTorqueState,
     pub v6510c_throttle: V6510cThrottleState,
     pub v6510c_arbitrator: PowerCurveArbitrator,
+    /// When true, temporary street-legal override is engaged via the boot-time Brake + Power combo.
+    pub street_legal_override: bool,
+    startup_cycle_count: u16,
     pas_keep_timer_ms: u16,
     shift_timer_ms: u16,
 }
@@ -78,8 +81,30 @@ impl Dm01Controller {
             v6510c_torque: V6510cTorqueState::new(zero_mv, max_mv, start_mv),
             v6510c_throttle: V6510cThrottleState::new(th_start_mv, 3250),
             v6510c_arbitrator: PowerCurveArbitrator::new(),
+            street_legal_override: false,
+            startup_cycle_count: 0,
             pas_keep_timer_ms: 0,
             shift_timer_ms: 0,
+        }
+    }
+
+    /// Returns true if the controller is actively enforcing European EN15194 / EPAC street-legal limits
+    /// (25.0 km/h speed cutoff, 250W continuous power, no standalone throttle above 6.0 km/h).
+    ///
+    /// - If [`MotorConfig::is_street_legal_locked()`] is true (compile-time feature or EEPROM PermanentLock),
+    ///   always returns `true` (tamper-proof: ignores all button combos and override attempts).
+    /// - If `StreetLegalMode::StreetLegalDefault`, returns `true` on normal boot, but allows the rider
+    ///   to toggle into Off-Road mode by holding **Brake + Power-On** at startup.
+    /// - If `StreetLegalMode::Unrestricted`, returns `false`.
+    pub fn is_currently_street_legal(&self) -> bool {
+        if self.config.is_street_legal_locked() {
+            true
+        } else if self.config.street_legal_mode
+            == crate::eeprom::StreetLegalMode::StreetLegalDefault
+        {
+            !self.street_legal_override
+        } else {
+            false
         }
     }
 
@@ -110,6 +135,15 @@ impl Dm01Controller {
     /// Executes one exact decompiled `V6510C` control cycle (`0x08003FD4`, `0x08003814`,
     /// `0x08008024`, `0x080067D4`, `0x08008DA4`, `0x08006620`, `0x0800674C`, `0x08005478`).
     pub fn step_v6510c(&mut self, inputs: &SensorInputs) -> ControlOutput {
+        // Track startup window for boot button combo detection (first 50 cycles / ~500 ms).
+        // Holding Brake at power-on toggles StreetLegalDefault into Off-Road mode (unless PermanentLock is set).
+        if self.startup_cycle_count < 50 {
+            self.startup_cycle_count += 1;
+            if inputs.brake_active && !self.config.is_street_legal_locked() {
+                self.street_legal_override = true;
+            }
+        }
+
         let cutoff = inputs.brake_active
             || inputs.backpedaling
             || inputs.shift_sensor_triggered
@@ -152,6 +186,8 @@ impl Dm01Controller {
         let battery_dv = (inputs.battery_voltage_mv / 100) as u16;
         let lvc_dv = (self.config.low_cut_voltage_mv / 100) as u16;
 
+        let street_legal_active = self.is_currently_street_legal();
+
         // 1. Stage 1 Ceilings: Global Mode Ceiling (Torque) vs Level Power Ceiling (PAS/Throttle)
         let global_ceil_da = compute_global_mode_ceiling_da(
             mode_max_da,
@@ -161,7 +197,7 @@ impl Dm01Controller {
             self.config.temp_ctl_max_c,
             battery_dv,
         );
-        let global_ceil_da = if self.config.is_street_legal_locked() {
+        let global_ceil_da = if street_legal_active {
             // EN15194 250W continuous limit: at battery voltage, clamp continuous current to ~250W
             let en15194_max_da = if battery_dv > 0 {
                 ((2500u32 * 10) / (battery_dv as u32)) as u16
@@ -182,7 +218,7 @@ impl Dm01Controller {
             self.config.temp_ctl_max_c,
             battery_dv,
         );
-        let level_ceil_da = if self.config.is_street_legal_locked() {
+        let level_ceil_da = if street_legal_active {
             level_ceil_da.min(global_ceil_da)
         } else {
             level_ceil_da
@@ -224,8 +260,7 @@ impl Dm01Controller {
         // 4. Stage 2C: Throttle Curve (capped by level_ceil_da = Pwr[level])
         let pedaling_forward = inputs.cadence_rpm > 0 && !inputs.backpedaling;
         let throttle_da = if self.config.throttle_enabled {
-            if self.config.is_street_legal_locked() && !pedaling_forward && !inputs.walk_assist_held
-            {
+            if street_legal_active && !pedaling_forward && !inputs.walk_assist_held {
                 // Strict EN15194: No standalone throttle from standstill without pedaling (walk assist held is allowed up to 6 km/h)
                 0
             } else {
@@ -239,7 +274,7 @@ impl Dm01Controller {
         // 5. Stage 3: Arbitrator, ±0.2A/step Ramp, Speed Soft-Taper, and LVC 3.0V Cushion
         let mut speed_limit_deci_kph =
             if self.config.speed_sensor_fail_unlimit && inputs.wheel_speed_deci_kph == 0 {
-                if self.config.is_street_legal_locked() {
+                if street_legal_active {
                     250 // Never bypass speed limit under street legal lock
                 } else {
                     0 // Speed limit bypassed when physical speed sensor fails/reads 0 and unlimit mode is active
@@ -250,7 +285,7 @@ impl Dm01Controller {
                 level_cfg.speed_limit_deci_kph
             };
 
-        if self.config.is_street_legal_locked() {
+        if street_legal_active {
             speed_limit_deci_kph = speed_limit_deci_kph.min(250); // Hard clamp to 25.0 km/h
         }
         let eff_speed = self.effective_wheel_speed_deci_kph(inputs);
@@ -727,5 +762,37 @@ mod tests {
             out_overspeed.target_current_ma, 0,
             "Assist must cut off above 25.0 km/h"
         );
+    }
+
+    #[test]
+    fn test_brake_power_boot_combo_toggles_street_legal_default() {
+        let config = MotorConfig {
+            street_legal_mode: crate::eeprom::StreetLegalMode::StreetLegalDefault,
+            ..Default::default()
+        };
+        // Normal boot (brake not held at startup): street-legal is active
+        let mut ctrl_normal = Dm01Controller::new(config.clone());
+        let mut normal_inputs = default_inputs();
+        normal_inputs.brake_active = false;
+        ctrl_normal.step_v6510c(&normal_inputs);
+        assert!(ctrl_normal.is_currently_street_legal());
+
+        // Brake held at startup: toggles street-legal override (engages off-road mode)
+        let mut ctrl_override = Dm01Controller::new(config);
+        let mut boot_inputs = default_inputs();
+        boot_inputs.brake_active = true;
+        ctrl_override.step_v6510c(&boot_inputs);
+        assert!(!ctrl_override.is_currently_street_legal());
+        assert!(ctrl_override.street_legal_override);
+
+        // However, if PermanentLock is set, holding brake at startup is strictly ignored!
+        let locked_config = MotorConfig {
+            street_legal_mode: crate::eeprom::StreetLegalMode::PermanentLock,
+            ..Default::default()
+        };
+        let mut ctrl_locked = Dm01Controller::new(locked_config);
+        ctrl_locked.step_v6510c(&boot_inputs);
+        assert!(ctrl_locked.is_currently_street_legal());
+        assert!(!ctrl_locked.street_legal_override);
     }
 }

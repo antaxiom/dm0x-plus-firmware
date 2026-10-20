@@ -90,7 +90,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 
 ## Common Build & Verification Commands
 ```bash
-# Run all unit, integration, and simulation tests (77 tests)
+# Run all unit, integration, and simulation tests (78 tests)
 cargo test --manifest-path dm01-firmware/Cargo.toml
 
 # Check strict formatting and clippy lints

@@ -290,7 +290,7 @@ Because displays stream live button states over UART in `DisplayCommandFrame`, t
   4. *4 Blips:* **Commuter Comfort** (Gentle launch, high cadence sensitivity)
   5. *5 Blips:* **Stock V6510C** (Factory stock linear ramp)
   *Automatically saved to Flash Page 127 EEPROM so the setting survives power cycles.*
-* **Hold Brake Lever + Power-On:** Toggles Street-Legal Mode (unless locked).
+* **Hold Brake Lever + Power-On at Startup:** In `StreetLegalDefault` mode, holding the brake lever while pressing Power-On temporarily disengages the 25.0 km/h / 250W limiter for that ride (engaging Off-Road mode). When `PermanentLock` is set (or compiled with `--features street_legal_lock`), this boot combo is completely locked out and ignored.
 
 ### 9.4 Reserve EEPROM Storage (`DmPlusCustomConfig` at `0x04A..0x05A`)
 The controller stores its custom state inside the 16 contiguous zero-padded reserve bytes discovered at `0x04A..0x05A` in Block 1 of the Flash EEPROM image:

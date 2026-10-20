@@ -435,6 +435,28 @@ export component MainWindow inherits Window {
                                     current-value <=> root.street-legal-mode;
                                     enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
                                 }
+                                if root.street-legal-mode == "Street-Legal Default (25 km/h, 250W, toggleable)" : Rectangle {
+                                    background: #1c2e40;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #3584e4;
+
+                                    HorizontalLayout {
+                                        padding: 8px;
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        Text {
+                                            text: "Street-Legal On Boot: Enforces 25 km/h & 250W by default. To temporarily toggle into Off-Road mode on the bike: Hold Brake Lever + Power-On at startup. (Select Permanent Lock below to forbid all bypasses).";
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            color: #99c1f1;
+                                            wrap: word-wrap;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
+                                }
                                 if root.street-legal-mode == "Permanent Street-Legal Lock (EN15194 Tamper-Proof)" : Rectangle {
                                     background: #0e3a1f;
                                     border-radius: 6px;
@@ -447,7 +469,7 @@ export component MainWindow inherits Window {
                                         alignment: start;
 
                                         Text {
-                                            text: "EN15194 / EPAC Tamper-Proof Lock Active: Strictly enforces 25.0 km/h cutoff and 250W continuous limit. Standalone throttle capped to 6 km/h walk-assist. Speed bypasses and display menu overrides are permanently locked out.";
+                                            text: "EN15194 / EPAC Tamper-Proof Lock Active: Strictly enforces 25.0 km/h cutoff and 250W continuous limit. Standalone throttle capped to 6 km/h walk-assist. Brake+Power boot combo, speed bypasses, and display menu overrides are permanently locked out.";
                                             font-size: 11px;
                                             font-weight: 500;
                                             color: #8ff0a4;

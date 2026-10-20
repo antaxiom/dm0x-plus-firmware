@@ -82,11 +82,13 @@ Here is the verified functionality available in this repository:
    - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
 
 5. **Physical Simulation & Verification Suite:**
-   - 77 automated unit, integration, and end-to-end physical simulation tests running in CI (68 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 78 automated unit, integration, and end-to-end physical simulation tests running in CI (69 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
    - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift (400..1000 mV), throttle idle ADC (<= 1050 mV to prevent runaway hazards), and controller/motor thermals prior to applying main battery power.
    - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller SRAM (`0x20000300`) over standard Julet 5-pin UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash EEPROM wear.
-   - **Permanent Street-Legal Lock (EN15194 / EPAC):** Tamper-proof compliance engine (compile-time `--features street_legal_lock` and GUI latch) enforcing strict 25.0 km/h cutoff, 250W continuous power limit, and standalone throttle lockout at standstill.
+   - **Street-Legal Compliance & Tamper-Proof Lock (EN15194 / EPAC):**
+     - **Street-Legal Default Mode:** Defaults to 25.0 km/h speed cutoff and 250W continuous power limit on boot. Holding **Brake Lever + Power-On** at startup temporarily disengages street-legal limits for that ride.
+     - **Permanent Street-Legal Lock (Tamper-Proof):** Compile-time flag (`--features street_legal_lock`) or GUI EEPROM latch permanently locking the controller to EN15194 limits. The Brake+Power boot combo, display menu speed adjustments, and UART speed bypasses are permanently locked out and ignored.
    - **Decoupled Handlebar Tuning Engine:** Full preservation of all 13 decompiled Throttle Modes (0..12) with autonomous on-trail profile switching via display proxies (`StrengthValue`, `Filter`, `SpeedSensorFail`) and standstill button combinations (`Walk + Up`).
 
 6. **Native Serial Transport & Cross-Platform Parity:**
