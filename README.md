@@ -27,7 +27,7 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.7` - Release Beta)
+## What Is Implemented Right Now (`v0.3.0-beta.8` - Release Beta)
 
 Here is the verified functionality available in this repository:
 
