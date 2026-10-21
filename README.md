@@ -33,63 +33,50 @@ Here is the verified functionality available in this repository:
 
 1. **DM+ Firmware Studio Desktop GUI (`dm-plus-gui`):**
    - Native cross-platform desktop application built with Slint and Rust, running on Linux, macOS, and Windows.
-   - Built-in embedded **DM01** and **DM02** Open Firmware containers (128 KB each) for single-click flashing without external files.
-   - Automatic target hardware detection when a custom `.Pack` file is loaded, locking the hardware selector to prevent cross-flashing between DM01 (external 12-FET) and DM02 (internal 6-FET).
-   - Parameter isolation: automatically grays out source-level tuning and battery limit controls when flashing pre-compiled factory `.Pack` files.
-   - Live serial flashing with automatic port discovery, plug/unplug detection, and offline patched `.hex` export.
-   - Apple HIG-compliant assets across all platforms and proper native window/dock integration.
+   - Built-in embedded **DM01** (external 12-FET) and **DM02** (internal 6-FET) Open Firmware containers for single-click flashing without external files.
+   - Automatic target hardware detection when loading custom `.Pack` files, locking the selector to prevent cross-flashing.
+   - Fixed-height Adwaita compliance and electrical limit banners with standardized Libadwaita styling and zero layout jumping.
+   - Interactive current limit controls with real-time visual safety warnings when exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
+   - Live serial flashing with automatic port discovery, hotplug detection, and offline unlocked `.hex` export.
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
 
 2. **Motor Controller IAP Flasher & Container Engine (`toseven_pack` & GUI):**
-   - **Dual-Tier Encryption & Wire Stream Cipher:**
-     - **Tier 1 (Container Encryption):** Verified auto-key derivation across all 15 official stock releases:
-       $$K_{\text{head}} = (\text{pack}[32] + \text{pack}[33]) \pmod{256}$$
-       $$K_{\text{payload}} = (\text{header}[30] + \text{header}[31]) \pmod{256}$$
-       Header CRC-16 at offset 30, payload 32-bit checksum at offset 26.
-     - **Tier 2 (Physical Wire Stream Cipher):** Byte-wise XOR masking during flash streaming:
-       $$B_{\text{wire}} = B_{\text{plain}} \oplus \text{UartMask}$$
-       Matching bootloader de-masking into Flash memory (`0x08001800`).
-   - **Full Handshake Protocol Engine:**
-     - **Step 1:** Sends 21-byte wakeup burst (`0x69` XOR stream cipher) at 9600 baud with high/low nibble `UartMask` distribution and DTR reset pulse fallback.
-     - **Step 2:** Bootloader probe at 38400 baud (vendor factory default) with automatic 115200 baud fallback (`0x02` -> `0x02, 0xFD` or `0x06`).
-     - **Step 3:** 12-byte header handshake (program size, 32-bit checksum, `UartMask`, baud index).
-     - **Step 4:** Streams payload in 16-byte chunks with pacing delay and 1024-byte (1 KB) sector commit acknowledgments (`0x06` ACK).
-     - **Step 5:** Bootloader cumulative 32-bit byte sum verification against Flash contents (`0x04` EOT on match; `0x15` NAK on failure).
-   - Automatic hardware target detection (`DM01` with `0xA8`/`0x67` vs. `DM02` with `0xF7`/`0xE2`).
-   - Bit-exact unpacking, verification, and repacking matching official vendor tools bit-for-bit.
-   - Natively extracts loadable segments directly from Cortex-M ELF binaries into official 128 KB `.Pack` containers without requiring external `objcopy`.
+   - **Universal Container Support:** Automatic key derivation and payload decryption across all 15 official DM01 and DM02 factory releases.
+   - **Robust Flashing Protocol Engine:** Full handshake state machine supporting dual-baud bootloader probing (38400 / 115200 baud), automated wakeup framing, paced sector streaming, and physical wire stream cipher masking.
+   - **Direct ELF-to-.Pack Packaging:** Natively extracts loadable segments directly from Cortex-M ELF binaries into official 128 KB `.Pack` containers without requiring external `objcopy` utilities.
+   - **Bit-Exact Verification:** Verifies container integrity and byte-exact roundtrips matching official vendor tooling.
 
 3. **Display Lockout Patcher & ISP Flasher (`toseven_pack display`):**
    - Automatically parses Intel HEX display firmware dumps (`T24V`, `T154`, `LCD135C`, `M15`).
-   - Detects and neutralizes all 6 restriction branch gates introduced in post-October 2024 factory firmware using ARM Thumb NOP (`0x00BF`) patches.
+   - Detects and neutralizes all 6 restriction branch gates introduced in post-October 2024 factory firmware using clean-room ARM Thumb NOP patches.
    - Restores permanent access to `Speed&Power`, maximum current limits, and wheel circumference menus.
-   - Flashes patched display firmware directly over USB CDC using the MegaHunt ISP bootloader protocol.
+   - Flashes patched display firmware directly over USB CDC using the MegaHunt ISP bootloader protocol, or exports unlocked `.hex` files for offline flashing.
 
 4. **Clean-Room Motor Controller Architecture (`dm01-firmware`):**
-   - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time clamps (6.0% to 94.0%), and Hall observer.
-   - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport, 40.27:1 reduction) and **DM02** (internal 6-FET, 18A Sport, 53.00:1 reduction), with hard safety ceilings (32.0 A max for DM01, 20.0 A max for DM02) and active UI/firmware warnings whenever exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
-   - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` (MSP `0x20005628`) and `dm02_firmware` (MSP `0x20005620`).
-   - **Automatic Dynamic Span Tracking (`AutoSpanTracking`):** Dynamic scaling pinning nominal deflection to 2.3 V, adapting to thermal zero-point drift and matching realistic human pedal effort.
-   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft current (<= 30%) below 18 RPM to protect the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic modulation.
-   - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact 0.0 A at cutoff voltage across the 3.0 V reserve window, eliminating abrupt BMS disconnects under battery sag.
-   - **Universal Sensorless Speed Fallback:** Computes static midpoint gear ratio from EEPROM Block 4. When the physical wheel speed sensor disconnects or loses its magnet, dynamically estimates vehicle speed from cadence to maintain speedometer telemetry and speed governing.
-   - **Hardware Parity & Low-Level Drivers:**
-     - **256-Sample Shunt Auto-Zero:** Synchronously averages 256 injected ADC conversions during startup while inverter outputs remain in High-Z (0A), calibrating stationary phase bias into injected offset registers.
-     - **Flash Page 127 Persistence Driver:** Unlocks, erases, and programs Page 127 (`0x0801FC00`), allowing runtime settings and display parameters to survive power cycles with verified 5-block XOR `0xA5` encryption and CRC-16 integrity.
-     - **Hardware Overcurrent Break Protection:** Configures `TIM1_BDTR.BKE` break input on PB12 to immediately disable all 6 MOSFET gates in < 50 ns upon comparator trip.
+   - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time margins (6.0% to 94.0%), and PLL Hall velocity/angle observer.
+   - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport) and **DM02** (internal 6-FET, 18A Sport), with safe firmware ceilings (32.0 A max for DM01, 20.0 A max for DM02) and active UI/firmware warnings whenever exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
+   - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` and `dm02_firmware`.
+   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft assist (<= 30%) below 18 RPM protecting the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic response.
+   - **Unified Level Ceilings (`UnifiedLevelCeiling`):** Assist Level 1 strictly respects configured power limits rather than drawing full mode current under heavy pedaling.
+   - **Automatic Dynamic Span Tracking (`AutoSpanTracking`):** Dynamic effort scaling that adapts to resting zero-point thermal drift, allowing riders to reach full assist across all riding temperatures.
+   - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact 0.0 A across a 3.0 V reserve window, eliminating sudden BMS cutouts under battery sag.
+   - **Universal Sensorless Speed Fallback:** Computes static midpoint gear ratios from drivetrain sprocket teeth. When the physical wheel speed sensor disconnects or loses its magnet, dynamically estimates vehicle speed from cadence to maintain speedometer telemetry and speed governing.
+   - **Hardware Safety & Low-Level Drivers:**
+     - **Startup Shunt Calibration:** 256-sample synchronous startup calibration to cancel stationary phase current amplifier offset before inverter engagement.
+     - **Non-Volatile Storage:** Flash configuration driver persisting runtime settings and display parameters across power cycles with CRC-16 integrity.
+     - **Hardware Overcurrent Break Protection:** Comparator-triggered break input that immediately disables all 6 MOSFET gates in < 50 ns upon overcurrent trip.
      - **Hardware Watchdog (`IWDG`):** 500 ms safety trip window refreshed deterministically inside the 1 ms SysTick control loop.
-     - **Automated Motor Self-Commissioning (`calibration.rs`):** Safe, low-power (1.5 A) automated self-commissioning procedure executing 0° DC rotor alignment, 120° Hall commutation sequence verification, electrical offset angle calculation (`angle_offset_deg`), phase swap detection, and coil resistance sanity check.
-   - 5-block Flash EEPROM manager (`0x0801FC00`) with XOR cipher, magic headers, and nibble CRC-16, embedding bit-exact factory images for both `TS1000W` and `TS500W`.
+     - **Automated Motor Self-Commissioning:** Safe, low-power automated self-commissioning procedure executing rotor alignment, Hall sequence check, electrical angle offset detection, and phase wiring validation.
 
 5. **Physical Simulation & Verification Suite:**
-   - 78 automated unit, integration, and end-to-end physical simulation tests running in CI (69 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 78 automated unit, integration, and physical simulation tests running in CI (69 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
-   - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift (400..1000 mV), throttle idle ADC (<= 1050 mV to prevent runaway hazards), and controller/motor thermals prior to applying main battery power.
-   - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller SRAM (`0x20000300`) over standard Julet 5-pin UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash EEPROM wear.
+   - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift, throttle idle voltage, and controller/motor thermals prior to applying main battery power.
+   - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller memory over standard display UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash wear.
    - **Street-Legal Compliance & Tamper-Proof Lock (EN15194 / EPAC):**
      - **Street-Legal Default Mode:** Defaults to 25.0 km/h speed cutoff and 250W continuous power limit on boot. Holding **Brake Lever + Power-On** at startup temporarily disengages street-legal limits for that ride.
-     - **Permanent Street-Legal Lock (Tamper-Proof):** Compile-time flag (`--features street_legal_lock`) or GUI EEPROM latch permanently locking the controller to EN15194 limits. The Brake+Power boot combo, display menu speed adjustments, and UART speed bypasses are permanently locked out and ignored.
-   - **Decoupled Handlebar Tuning Engine:** Full preservation of all 13 decompiled Throttle Modes (0..12) with autonomous on-trail profile switching via display proxies (`StrengthValue`, `Filter`, `SpeedSensorFail`) and standstill button combinations (`Walk + Up`).
+     - **Permanent Street-Legal Lock (Tamper-Proof):** Compile-time flag (`--features street_legal_lock`) or GUI EEPROM latch permanently locking the controller to EN15194 limits. Standalone throttle is capped to 6 km/h walk-assist, and the Brake+Power boot combo, display menu speed adjustments, and UART speed bypasses are permanently locked out and ignored.
+   - **Decoupled Handlebar Tuning Engine:** Full preservation of all 13 factory throttle modes with on-trail profile switching via display proxies and handlebar button shortcuts.
 
 6. **Native Serial Transport & Cross-Platform Parity:**
    - Unified native serial engine operating on macOS, Linux, and Windows without external script dependencies.
@@ -97,9 +84,9 @@ Here is the verified functionality available in this repository:
    - Hardware and kernel FIFO queue flushing before baud rate transitions and probe sequences to purge leftover telemetry frames.
 
 7. **Documentation & Protocol Specifications:**
-   - **Bench Bring-up & Diagnostics:** Hardware pinout runbooks ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md), [`Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md`](Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md)).
-   - **Display Firmware & Unlock Specification:** ([`Documentation/ToSeven_Display_Firmware_Architecture.md`](Documentation/ToSeven_Display_Firmware_Architecture.md)) detailing analog resistor ladder button decoder, 13 throttle modes, 3-gate menu lockout bypass, and engineering parameter trees.
-   - **Bluetooth Low Energy (BLE) & Mobile App Protocol:** ([`Documentation/ToSeven_Bluetooth_and_App_Protocol.md`](Documentation/ToSeven_Bluetooth_and_App_Protocol.md)) documenting GATT services (`0000FFF0..2`), `0x7E..0x7F` packet framing with `0x3C 0xC3` sync, diagnostic telemetry packets, and `CTLCFG` EEPROM reflection fields.
+   - Hardware pinout runbooks ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md), [`Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md`](Documentation/ToSeven_Controller_Depotting_and_Diagnostics_Guide.md)).
+   - Display architecture and lockout bypass specification ([`Documentation/ToSeven_Display_Firmware_Architecture.md`](Documentation/ToSeven_Display_Firmware_Architecture.md)).
+   - Bluetooth Low Energy (BLE) and mobile app protocol specification ([`Documentation/ToSeven_Bluetooth_and_App_Protocol.md`](Documentation/ToSeven_Bluetooth_and_App_Protocol.md)).
 
 ---
 
@@ -108,7 +95,7 @@ Here is the verified functionality available in this repository:
 ### Methodology & Architecture
 This project is a **clean-room reimplementation** written in memory-safe, modern `#![no_std]` Rust:
 
-- **Decompilation-Informed Architecture:** Register offsets, communication framing, state machines, and EEPROM layouts were documented through static analysis of stock factory firmware binaries (including `V6510C`).
+- **Decompilation-Informed Architecture:** Register maps, communication framing, state machines, and configuration layouts were documented through static analysis of stock factory firmware binaries.
 - **No Proprietary Code Reuse:** No vendor C code, proprietary assembly routines, or closed-source libraries are included. Every algorithm, filter, and state machine was documented and rewritten from scratch in idiomatic Rust.
 - **Asset Isolation:** All proprietary manufacturer assets (`.Pack` containers, `.hex` display dumps, APK tuning apps, and vendor manuals) are strictly isolated in a `.gitignore`d directory and cataloged solely by SHA-256 hashes in [`blobs/README.md`](blobs/README.md).
 
@@ -122,74 +109,47 @@ This codebase was developed with the assistance of advanced generative AI models
 
 ## Community Inquiries & Technical Feedback
 
-Below are technical analyses of community-raised topics regarding the motor controller algorithms:
+Below are concise summaries of core technical solutions addressing community feedback on the stock firmware:
 
 ### 1. Torque Sensor Dynamic Range & Zero-Point Drift
-- **Observation:** In physical testing, riders cannot mechanically deflect the DM01 torque strain gauge to the nominal 3.3 V ceiling; typical hard pedal efforts reach 1.7 V to 2.0 V, with extreme climbing rarely exceeding 2.7 V. Furthermore, the resting zero-point voltage drifts thermally between 0.6 V and 0.9 V.
-- **Stock Limitation:** Stock `V6510C` firmware normalizes rider effort against a static 3300 mV ceiling (a 2600 mV span above 700 mV zero), meaning riders rarely utilize more than 40% to 50% of the configured assist range without artificial amplification.
-- **DM+ Implementation:** Rider effort is calculated from dynamic deflection:
-  $$\Delta V_{\text{rider}} = V_{\text{applied}} - V_{\text{zero}}$$
-  With `TorqueSpanPolicy::AutoSpanTracking { nominal_span_mv: 2300 }`, the effective ceiling shifts dynamically with the tracked zero-point:
-  $$V_{\text{max}} = V_{\text{zero}} + 2300\text{ mV}$$
-  $$\text{Effort} = \frac{V_{\text{applied}} - V_{\text{zero}}}{2300\text{ mV}}$$
-  This ensures consistent assist sensitivity across thermal drift and allows riders to reach 100% assist within realistic mechanical pedal deflection.
+- **The Issue:** Physical strain gauge deflection during normal hard pedaling produces a signal far below the nominal ceiling, and resting zero-point voltages drift with motor temperature. Stock firmware normalizes against a rigid fixed ceiling, preventing riders from reaching full assist without excessive artificial multipliers.
+- **The DM+ Solution:** Auto-Span Tracking dynamically pins the assist span relative to the tracked resting zero-point. Assist sensitivity remains predictable across thermal drift, allowing riders to achieve full motor assist with natural pedal force.
 
 ### 2. Low-Cadence Power Delivery vs. Nylon Primary Gear Protection
-- **Observation:** The DM01 internal primary reduction relies on a composite blue nylon helical gear. Delivering maximum current (30 A / ~1500 W) at very low cadence (< 18 RPM) introduces high mechanical shear stress on gear teeth during standing-start pedal stomps.
-- **Stock Limitation:** Stock firmware penalizes low-cadence climbing with a linear cadence multiplier (`Cadence / 60 RPM`), cutting power by 60% at 25 RPM. While this protects the plastic gear, it causes riders to stall on steep inclines.
-- **DM+ Implementation:** Power delivery is decoupled into selectable tuning profiles:
-  - `GearSafeKnee` (**Default / Recommended**): Limits assist to <= 30% below 18 RPM to shield gear teeth from standing starts, then ramps to 100% assist at 35 RPM with full torque across the active pedaling band (35-110+ RPM).
-  - `Stock60Rpm`: Retains the conservative stock linear ramp for factory throttle and PAS behavior.
-  - `UncappedCadence` (**Metal Gear Only**): Immediate full torque assist down to 5 RPM for riders with aftermarket steel/PEEK primary reduction gears.
+- **The Issue:** Delivering maximum torque at near-zero cadence shears teeth off the internal blue nylon reduction gear during standing-start pedal stomps. Stock firmware protected the gear by penalizing all low-cadence riding with a severe linear ramp, causing riders to stall on steep hills.
+- **The DM+ Solution:** The default **Gear-Safe Progressive Profile** softens assist below 18 RPM to shield the nylon gear, then ramps smoothly to 100% assist at 35 RPM. Full climbing power is unlocked across the active pedaling band (35–110+ RPM) without risking gear failure. An uncapped profile is available for aftermarket metal gear builds.
 
-### 3. Battery Low-Voltage Cutoff (LVC) Cushion & 0A Protection
-- **Observation:** Stock firmware features a 3.0 V reserve cushion above Low-Voltage Cutoff (LVC), but tapers current down to a 25% floor rather than cutting power completely. If an overloaded battery sags further, this residual draw can trigger an abrupt BMS shutdown.
-- **DM+ Implementation:** `LvcCushionPolicy::TrueZeroCutoff` provides a smooth linear taper down to true zero:
-  - Above $V_{\text{LVC}} + 3.0\text{ V}$: 100% configured current limit is available.
-  - Across the 3.0 V cushion ($V_{\text{LVC}} \le V \le V_{\text{LVC}} + 3.0\text{ V}$): Current linearly tapers from 100% down to **exactly 0.0 A** at $V_{\text{LVC}}$.
-  - At or below $V_{\text{LVC}}$: PWM output is completely suppressed (0 A), preventing battery sag below cell limits and eliminating abrupt BMS shutdowns under load.
+### 3. Battery Low-Voltage Cutoff (LVC) Cushion & True Zero Cutoff
+- **The Issue:** Stock firmware maintains a residual current floor at low voltage rather than cutting power entirely. Under heavy hill climbing, this remaining draw causes sagging batteries to trip their BMS into sudden, jarring total shutdown.
+- **The DM+ Solution:** True Zero Cutoff smoothly tapers current down to exact 0.0 A across a 3.0 V reserve window above the low-voltage cutoff. Power is completely suppressed at the cutoff threshold, protecting battery cells and preventing unexpected BMS disconnections.
 
-### 4. Drivetrain Kinematics & Kinematic Speed Fallback
-- **Observation:** Display settings menus provide `CranksetTeeth`, `CassetMaxTeeth`, and `CassetMinTeeth`. In stock firmware, altering these settings has no effect during standard torque-sensing riding.
-- **Decompiled Findings:** Stock `V6510C` firmware reads these three EEPROM parameters from Block 4 (`0x1D0..0x1D2`) to precompute a static midpoint gear ratio:
-  $$\text{ratio}_{\text{mid}} = \frac{1}{2}\left(\frac{\text{Crankset}}{\text{CassetMin}} + \frac{\text{Crankset}}{\text{CassetMax}}\right)$$
-  Real-time dynamic gear ratio estimation ($\omega_{\text{wheel}} / \omega_{\text{crank}}$) is constrained on mid-drives due to 1-pulse-per-revolution sensor latency (~1.4 s between pulses at 6 km/h) and freewheel decoupling during coasting.
-- **DM+ Implementation:** DM+ uses these EEPROM sprocket parameters for **Universal Sensorless Speed Fallback**:
-  - When the physical wheel speed sensor is operational, its reading governs speed limits and telemetry directly.
-  - If the wheel speed sensor cable is damaged or the spoke magnet is lost ($v_{\text{wheel}} = 0$), DM+ automatically estimates speed:
-    $$v_{\text{est}} = \text{Cadence} \times \text{ratio}_{\text{mid}} \times C_{\text{wheel}}$$
-  - Operates across all riding modes (Torque, PAS, and Throttle), keeping display speedometers active and speed soft-taper governors functioning during sensor hardware failure.
-  - **SpeedSensorFail Option:** When configured to `Speed Unlimit` (`0x1D7 == 0`, factory default), the speed governor cutoff is bypassed if the physical sensor reads 0, while still reporting estimated speed to the display. If set to `Speed Limit` (`0x1D7 == 1`), the governor strictly enforces assist level speed cutoffs using estimated speed.
-
-### 5. Hardware Gap Analysis (Stock V6510C vs. DM+)
-- Vector table interrupt mapping across all active ISRs (ADC JEOC IRQ 18, TIM1 Break IRQ 24, TIM1 UP IRQ 25, TIM2 Hall IRQ 28, TIM4 Speed IRQ 30, USART3 IRQ 39).
-- Utilization of STM32 hardware Injected Offset Registers (`ADC1->JOFR1` / `ADC2->JOFR1`) for zero-overhead phase shunt subtraction.
-- Implementation of the 5-stage FOC rotor state machine and inverter reset routines (`0x08006000`).
-- Wire protocol byte multiplexing between regular throttle (`0x01`) and active `FaultFlags` (`0x11`) driving display error messages.
+### 4. Drivetrain Kinematics & Sensorless Speed Fallback
+- **The Issue:** In stock firmware, drivetrain tooth count settings have no functional effect, and losing the spoke magnet or wheel sensor cable completely disables display speedometers and speed limiters.
+- **The DM+ Solution:** DM+ uses configured chainring and cassette sprocket tooth counts to calculate midpoint gear ratios. If the physical wheel sensor signal is lost, the controller dynamically estimates vehicle speed from cadence to keep display speedometers functioning and maintain smooth speed governing. Detailed forensic comparison and interrupt architecture are documented in [`Documentation/Forensic_Firmware_Gap_Analysis_V6510C_vs_Open_Firmware.md`](Documentation/Forensic_Firmware_Gap_Analysis_V6510C_vs_Open_Firmware.md).
 
 ---
 
 ## Detailed Documentation & Reference Guides
 
 <details>
-<summary><strong>Comparison: Stock Factory Firmware (V6510C) vs. DM+ Open Architecture</strong></summary>
+<summary><strong>Comparison: Stock Factory Firmware vs. DM+ Open Architecture</strong></summary>
 
 <br>
 
-| Feature / Subsystem | Stock Factory Firmware (`V6510C`) | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
+| Feature / Subsystem | Stock Factory Firmware | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
 | :--- | :--- | :--- | :--- |
-| **Low-Cadence Climbing Power** | Strict linear scaling (`Cadence / 60 RPM`); assist cut by 60% at 25 RPM | **Selectable Profiles:** Gear-Safe Progressive (default, <= 30% under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | More power on steep hill starts without nylon gear damage |
-| **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor ignores assist level `Pwr%` and uses only Mode Max | **Unified Level Ceiling Policy:** Optional profile enforcing that torque assist respects assist level `Pwr%` | Predictable power scaling and battery conservation across assist levels |
+| **Low-Cadence Climbing Power** | Strict linear scaling; assist cut by 60% at 25 RPM | **Selectable Profiles:** Gear-Safe Progressive (default, <= 30% under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | More power on steep hill starts without nylon gear damage |
+| **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor ignores assist level `Pwr%` and uses Mode Max | **Unified Level Ceiling Policy:** Assist Level 1 strictly respects configured `Pwr%` limit | Predictable power scaling and battery conservation across assist levels |
 | **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, progressive boost on steep climbs | Natural trail feel; reduced leg fatigue for urban commuting |
 | **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes to physical Hall pins; decays to zero velocity when stationary | Smooth takeoff without shudder or runaway assist |
-| **Hardware Safety Watchdog** | Inactive or unmonitored during boot hangs | **Independent Hardware Watchdog (IWDG):** Active 500 ms window timer clocked by 40 kHz LSI oscillator, serviced in 1 ms SysTick | Failsafe reboot into safe High-Z (`MOE=0`) if firmware hangs |
-| **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to 6.0% to 94.0% (1.5 µs margin) | Eliminates high-side/low-side FET shoot-through risk under transients |
-| **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous 0 ms High-Z Shutdown:** Brake lever (`PB12`), backpedaling, Hall fault (`0b000`/`0b111`), or gear shift sensor | Immediate motor disengagement for maximum rider safety |
+| **Hardware Safety Watchdog** | Inactive or unmonitored during boot hangs | **Independent Hardware Watchdog (IWDG):** Active 500 ms window timer clocked by independent oscillator | Failsafe reboot into safe High-Z shutdown if firmware hangs |
+| **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to 6.0% to 94.0% | Eliminates high-side/low-side FET shoot-through risk under transients |
+| **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous Shutdown (< 50 ns hardware trip):** Brake lever, backpedaling, Hall fault, or gear shift sensor | Immediate motor disengagement for maximum rider safety |
 | **Thermal Protection** | Sudden cliff or delayed step reduction | **Smooth Continuous Linear Rollback:** Continuous linear derating from 70°C down to 0.0 A at 100°C | Smooth power reduction while cooling without sudden cutouts |
 | **Battery LVC Cushion** | Fixed 3.0V cushion tapering down to 25% current floor | **True Zero Cutoff (TrueZeroCutoff):** Linear taper down to exact 0.0 A at LVC; completely suppresses PWM below LVC | Eliminates abrupt battery BMS shutdowns under heavy hill climbing |
-| **Multi-Voltage Adaptability** | Hardcoded 50.0V constant-power cap; fixed 48V tuning | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages |
-| **Display Compatibility** | Post-October 2024 menu lockouts prevent modifying settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** NOPs out all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15`, with live USB flashing or direct `.hex` export | Regain access to `Speed&Power`, current limits, and wheel circumference |
-| **Verification & Flashing Tool** | Windows-only closed-source executables (`IAP Tool 5.2`, `MH2020C_ISP`) | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, export patched hex | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
+| **Multi-Voltage Adaptability** | Hardcoded constant-power cap; fixed 48V tuning | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages |
+| **Display Compatibility** | Post-October 2024 menu lockouts prevent modifying settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** Neutralizes all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15`, with live USB flashing or direct `.hex` export | Regain access to `Speed&Power`, current limits, and wheel circumference |
+| **Verification & Flashing Tool** | Windows-only closed-source vendor executables | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, export patched hex | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
 
 > [!TIP]
 > For step-by-step flashing procedures, recovery of corrupted controllers, hardware pinouts, and display ISP unlocking instructions, consult [`Documentation/Firmware_Flashing_and_Recovery_Guide.md`](Documentation/Firmware_Flashing_and_Recovery_Guide.md).
@@ -235,10 +195,10 @@ To open the application on macOS:
 <br>
 
 ```bash
-# Inspect container metadata, vector table, and factory EEPROM
+# Inspect container metadata, vector table, and factory configuration
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- info <firmware.Pack>
 
-# Decrypt firmware binary payload (57,708 bytes loaded at 0x08001800)
+# Decrypt firmware binary payload from .Pack container
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- unpack <firmware.Pack> payload.bin
 
 # Build the standalone bare-metal Cortex-M4F ELF binary
@@ -275,15 +235,15 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- display
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic --simulate
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- diagnostic <port>
 
-# Live parameter tuning via UART (instant SRAM injection, zero reboot, zero Flash wear)
+# Live parameter tuning via UART (instant runtime injection, zero reboot, zero Flash wear)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune --sport 28 --city 18 --eco 10 --speed 32 --simulate
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- tune <port> --sport 28 --city 18 --eco 10 --speed 32
 
-# Monitor live 0x69-encrypted UART telemetry (or run simulated ride demo)
+# Monitor live encrypted UART telemetry (or run simulated ride demo)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor --simulate
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- monitor <port> --baud 9600
 
-# Run comparative 6-scenario ride simulation suite (Stock V6510C vs. Open Firmware)
+# Run comparative 6-scenario ride simulation suite (Stock vs. Open Firmware)
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- simulate
 
 # List connected USB serial adapters and displays
@@ -293,15 +253,15 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 </details>
 
 <details>
-<summary><strong>Hardware Specifications, Pinouts & Bring-up Runbook</strong></summary>
+<summary><strong>Hardware Architecture, Pinouts & Bring-up Runbook</strong></summary>
 
 <br>
 
-### Extracted Hardware Architecture ([`Documentation/DM01_Hardware_Specification.md`](Documentation/DM01_Hardware_Specification.md))
-- **Processor:** ARM Cortex-M4F with hardware single-precision FPU enabled (`SCB->CPACR`).
-- **PWM Timer (`TIM1` at `0x40012C00`):** Center-aligned 16 kHz complementary 6-FET PWM (`ARR = 5999`, `DTG = 100` ≈ 1.38 µs dead-time). High-side: `PA8, PA9, PA10`. Low-side: `PB13, PB14, PB15`. Emergency Break input: `PB12`.
-- **Analog Subsystem (`ADC1/ADC2`):** Dual injected simultaneous sequence for Shunt U (`PA0`), Shunt V (`PA1`), and derived Shunt W. Regular scanned channels: Bus voltage (`PB0`), Strain gauge torque sensor (`PA4`), Throttle (`PA7`), Motor thermistor (`PB1`).
-- **UART (`USART3` at `0x40004800`):** Display bus running at 9600 Baud (8-N-1), TX on `PB10`, RX on `PB11`, with symmetric wire XOR `0x69` stream cipher.
+### Hardware Architecture Overview ([`Documentation/DM01_Hardware_Specification.md`](Documentation/DM01_Hardware_Specification.md))
+- **Processor:** 32-bit ARM Cortex-M4F microcontroller with hardware single-precision floating-point unit (FPU).
+- **Inverter Drive:** Center-aligned 16 kHz complementary 6-FET PWM with 1.4 µs dead-time margins and comparator-driven emergency break input.
+- **Analog Subsystem:** Dual-channel simultaneous ADC sampling for Phase Shunts U/V, bus voltage, analog strain gauge torque, throttle, and motor/controller thermistors.
+- **Display Communication:** Bidirectional 9600 Baud bus running over standard Julet 5-pin harness with symmetric stream encryption.
 
 ### Safety Verification Before Physical On-Bike Testing
 - **Bench Power Supply Limits:** Before connecting to a live high-current battery pack, inverter gate drivers must be tested on a bench power supply strictly current-clamped to <= 1.0 A at 48 V.
@@ -317,31 +277,31 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 ```text
 ├── dm01-firmware/           # Core #![no_std] Rust firmware crate & CLI
 │   ├── src/
-│   │   ├── power_curve.rs   # Exact V6510C integer power curve pipeline
+│   │   ├── power_curve.rs   # Exact integer power curve pipeline & arbitration
 │   │   ├── tuning.rs        # Source-level tuning profiles (uncapped cadence, progressive torque)
 │   │   ├── foc.rs           # Clarke/Park, SVPWM, and PLL Hall observer
-│   │   ├── eeprom.rs        # 5-block Flash EEPROM storage & CRC-16
-│   │   ├── flasher.rs       # IAP wakeup, 12-byte header, chunk pacing & display ISP
-│   │   ├── display_patcher.rs # Intel HEX parser & NOP lockout bypass
+│   │   ├── eeprom.rs        # Flash EEPROM storage manager & CRC-16
+│   │   ├── flasher.rs       # IAP wakeup, header framing, chunk pacing & display ISP
+│   │   ├── display_patcher.rs # Intel HEX parser & clean-room NOP lockout bypass
 │   │   ├── pack.rs          # .Pack container parser, cipher, and repacker
-│   │   ├── pac.rs           # Memory-mapped peripheral register bindings (TIM1, ADC, USART, GPIO)
-│   │   ├── hal.rs           # Concrete DM01 hardware drivers (Dm01PwmHardware, Dm01SensorsHardware)
-│   │   ├── protocol.rs      # Display UART 0x69 cipher protocol
+│   │   ├── pac.rs           # Memory-mapped peripheral register bindings
+│   │   ├── hal.rs           # Concrete DM01 hardware drivers
+│   │   ├── protocol.rs      # Display UART protocol & wire cipher
 │   │   ├── stock.rs         # Known official release registry (15 factory releases)
 │   │   ├── sha256.rs        # Embedded no_std SHA-256 digest
 │   │   ├── bin/
 │   │   │   ├── firmware.rs  # Standalone bare-metal Cortex-M4F firmware entry point & vector table
 │   │   │   └── toseven_pack.rs # CLI packaging, unpacking, verify, and flashing tool
-│   │   └── memory.ld        # Flash (0x08001800) and SRAM (0x20000000) linker script
+│   │   └── memory.ld        # Flash and SRAM linker script for bare-metal targets
 │   └── tests/
 │       ├── simulation_suite.rs # 6 end-to-end comparative physical ride scenarios
 │       └── stock_identity.rs   # Bit-exact stock roundtrip & tuning tests
 ├── dm-plus-gui/             # DM+ Firmware Studio desktop GUI (Slint)
-│   ├── assets/              # Embedded standalone open firmware .Pack
+│   ├── assets/              # Embedded standalone open firmware .Pack containers
 │   ├── ui/
-│   │   └── appwindow.slint  # Dark GTK4/Libadwaita desktop interface
+│   │   └── appwindow.slint  # Dark Libadwaita desktop interface
 │   └── src/
-│       └── main.rs          # Asynchronous flashing threads, RFD file pickers, and serial integration
+│       └── main.rs          # Asynchronous flashing threads, file pickers, and serial integration
 ├── scripts/
 │   └── package-release.sh   # Local release packaging script for current host OS
 ├── .github/
@@ -367,7 +327,7 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 </details>
 
 <details>
-<summary><strong>Project Vision & Future Roadmap (Unified Mega-Firmware)</strong></summary>
+<summary><strong>Project Vision & Future Roadmap (Unified Ecosystem)</strong></summary>
 
 <br>
 
@@ -376,7 +336,7 @@ Most e-bike firmware modifications force riders into a frustrating loop: disconn
 Our long-term architectural goal is to build an open, unified motor and display ecosystem:
 1. **Flash Once:** Flash open motor controller firmware onto the motor once.
 2. **Handlebar Control:** Configure motor behaviors directly through the on-bike display menu (`LCD135C`, `T24V`, `T154`, `M15`) or smartphone via Bluetooth.
-3. **Dynamic Tuning via UART:** Settings are communicated over the ToSeven UART protocol and saved directly into Flash EEPROM (`0x0801FC00`).
+3. **Dynamic Tuning via UART:** Settings are communicated over the ToSeven UART protocol and saved directly into Flash EEPROM.
 4. **On-the-Fly Profile Switching:** Toggle between smooth commuting, progressive trail riding, or uncapped climbing power at the push of a handlebar button.
 
 ```
