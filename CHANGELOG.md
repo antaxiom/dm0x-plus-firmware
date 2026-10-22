@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Bare-Metal Cortex-M4F Startup Initialization (`firmware.rs` & `firmware_dm02.rs`):**
+  - **Peripheral Clock Gating Order:** Reordered initialization so that all RCC clock gates (`RCC->APB2ENR` for TIM1, GPIOA..D, and ADCs) are asserted *before* any timer or ADC registers are touched, eliminating immediate startup BusFaults.
+  - **Bounded Shunt Calibration:** Added loop timeout bounds to `calibrate_shunts()` in `hal.rs` to ensure the MCU never hangs in an infinite spinlock when running on an isolated bench without active motor phase inputs.
+  - **SysTick Control Loop Starvation:** Fixed `systick_has_fired()` starvation in `firmware.rs` by migrating to interrupt-driven `SYSTEM_TICKS_MS` elapsed time tracking, keeping the hardware watchdog (IWDG) fed.
+  - **IAP Software Wakeup Support:** Added runtime handler for the 21-byte wakeup burst (`0xC9 0x77`) in the application main loop, allowing software-commanded reboots into IAP bootloader mode via `SCB->AIRCR`.
+
+### Added
+- **Critical Flashing Warnings & Potted Bootloader Documentation:**
+  - Added prominent warnings in [`README.md`](README.md), [`Firmware_Flashing_and_Recovery_Guide.md`](Documentation/Firmware_Flashing_and_Recovery_Guide.md), and [`Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md) explaining the software bootloader trap: if custom experimental firmware faults before initializing serial communication, software IAP recovery becomes impossible over the wire harness and requires physical depotting + SWD debugging.
+  - Added multi-baud bootloader detection utility [`scripts/bootloader_catcher.py`](scripts/bootloader_catcher.py).
+
+---
+
 ## [v0.3.0-beta.8] - 2026-10-20
 
 ### Added
@@ -108,3 +124,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial clean-room `#![no_std]` Rust recompilation of the ToSeven motor controller firmware (`dm01-firmware`).
 - Complete IAP protocol reverse engineering and bit-exact `.Pack` container repacker (`toseven_pack`).
 - MegaHunt ISP display flasher and clean-room NOP lockout patcher for `T24V`, `T154`, `LCD135C`, and `M15`.
+

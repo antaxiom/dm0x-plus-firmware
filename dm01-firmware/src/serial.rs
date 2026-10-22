@@ -220,10 +220,10 @@ fn configure_raw_termios(fd: std::os::unix::io::RawFd, baud: u32) -> io::Result<
             let _ = libc::ioctl(fd, IOSSIOSPEED, &mut speed_val);
         }
 
-        // Assert DTR and RTS modem control lines (vital for MegaHunt USB CDC-ACM display bootloaders)
+        // De-assert DTR and RTS so the controller is NOT held in hardware reset!
         let mut status: libc::c_int = 0;
         if libc::ioctl(fd, libc::TIOCMGET, &mut status) == 0 {
-            status |= libc::TIOCM_DTR | libc::TIOCM_RTS;
+            status &= !(libc::TIOCM_DTR | libc::TIOCM_RTS);
             let _ = libc::ioctl(fd, libc::TIOCMSET, &status);
         }
 
@@ -267,11 +267,11 @@ fn configure_windows_comm(handle: RawHandle, baud: u32) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
 
-        // Assert DTR and RTS modem control lines
-        const SETDTR: u32 = 5;
-        const SETRTS: u32 = 3;
-        EscapeCommFunction(handle as _, SETDTR);
-        EscapeCommFunction(handle as _, SETRTS);
+        // De-assert DTR and RTS so controller is NOT held in hardware reset
+        const CLRDTR: u32 = 6;
+        const CLRRTS: u32 = 4;
+        EscapeCommFunction(handle as _, CLRDTR);
+        EscapeCommFunction(handle as _, CLRRTS);
 
         // Purge driver FIFO queues
         const PURGE_TXABORT: u32 = 0x0001;
@@ -754,24 +754,21 @@ where
     let mut active_baud_idx = 0u8; // 0 = 38400 Baud (official factory default)
     let mut connected = false;
 
-    // Quick probe at 38400 Baud in case MCU is already in IAP mode
     transport
         .set_baud_rate(IAP_BAUD_38400)
         .map_err(|_| FlasherError::Timeout)?;
     let _ = transport.flush_input();
-    thread::sleep(Duration::from_millis(150));
 
-    // Send up to 3 probe bytes at 38400 Baud
-    for _ in 0..3 {
+    // Aggressive bootloader catch window: send probes over 40 attempts (~4.0s)
+    // to reliably catch the MCU bootloader on power-up / power-cycle.
+    for _ in 0..40 {
         let _ = transport.flush_input();
-        transport
-            .write_all(&[BOOTLOADER_PROBE_BYTE])
-            .map_err(|_| FlasherError::Timeout)?;
-        if wait_for_ident(transport, Duration::from_millis(150)) {
+        let _ = transport.write_all(&[BOOTLOADER_PROBE_BYTE]);
+        if wait_for_ident(transport, Duration::from_millis(80)) {
             connected = true;
             break;
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(20));
     }
 
     // Step 2: If application firmware is running, command reboot into IAP mode at 9600 Baud

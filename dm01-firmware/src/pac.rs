@@ -56,6 +56,7 @@ pub const RCC_BASE: usize = 0x4002_1000;
 pub const DMA1_BASE: usize = 0x4002_0000;
 pub const FLASH_BASE_REG: usize = 0x4002_2000;
 pub const SCB_VTOR_ADDR: usize = 0xE000_ED08;
+pub const SCB_AIRCR_ADDR: usize = 0xE000_ED0C;
 pub const SCB_CPACR_ADDR: usize = 0xE000_ED88;
 pub const SYST_CSR_ADDR: usize = 0xE000_E010;
 pub const SYST_RVR_ADDR: usize = 0xE000_E014;
@@ -295,6 +296,18 @@ impl HardwarePeripherals {
     pub fn set_vtor(vtor_addr: u32) {
         unsafe {
             write_volatile(SCB_VTOR_ADDR as *mut u32, vtor_addr);
+        }
+    }
+
+    /// Triggers a software system reset via the Cortex-M Application Interrupt and Reset Control Register (AIRCR).
+    #[inline(always)]
+    pub fn system_reset() -> ! {
+        unsafe {
+            // VECTKEY (0x05FA) | SYSRESETREQ (bit 2)
+            write_volatile(SCB_AIRCR_ADDR as *mut u32, 0x05FA_0004);
+            loop {
+                core::hint::spin_loop();
+            }
         }
     }
 

@@ -115,16 +115,17 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     // 2. Relocate Vector Table to Flash Application Base (0x08001800)
     HardwarePeripherals::set_vtor(0x0800_1800);
 
-    // 3. Initialize Physical Hardware Peripherals (starts in High-Z with MOE=0)
+    // 3. Initialize Physical Hardware Clocks & Sensors FIRST
+    let mut sensors = Dm01SensorsHardware::new();
+    sensors.init_hardware();
+    // 3a. Perform 256-sample startup shunt auto-zero calibration
+    sensors.calibrate_shunts();
+
+    // 4. Initialize PWM Hardware (TIM1) after clocks are active
     let mut pwm = Dm01PwmHardware::new();
     pwm.init_hardware();
 
-    let mut sensors = Dm01SensorsHardware::new();
-    sensors.init_hardware();
-    // 3a. Perform 256-sample startup shunt auto-zero calibration (matching V6510C at 0x08009A6C)
-    sensors.calibrate_shunts();
-
-    // 4. Configure SysTick Timer for 1 ms deterministic tick at 72 MHz (72,000 clock cycles)
+    // 5. Configure SysTick Timer for 1 ms deterministic tick at 72 MHz (72,000 clock cycles)
     HardwarePeripherals::init_systick(72_000);
 
     // 5. Initialize Hardware Watchdog (IWDG) with 500 ms safety trip window
@@ -153,21 +154,32 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     let mut cmd_decoder = DisplayCommandDecoder::new();
     let mut display_walk_held = false;
 
+    let mut last_ms: u32 = 0;
+
     // Main real-time motor control loop:
     // - Slow loop (1 ms / 1 kHz): analog strain gauge, throttle, battery voltage, thermistors, brake
     // - Fast loop (16 kHz): synchronized to TIM1 TRGO injected shunt current conversions (ADC1 JEOC)
     loop {
-        // 1. Slow 1 ms loop: sample control inputs and step high-level controller state machine
-        if first_tick || HardwarePeripherals::systick_has_fired() {
+        // 1. Slow 1 ms loop driven by SysTick interrupt counter
+        let now_ms = unsafe { read_volatile(&raw const SYSTEM_TICKS_MS) };
+        if first_tick || now_ms != last_ms {
             first_tick = false;
+            last_ms = now_ms;
 
             // A. Feed Hardware Watchdog to prevent MCU reset
             HardwarePeripherals::feed_iwdg();
 
-            // B. Poll USART3 RX non-blockingly for incoming display command frames
+            // B. Poll USART3 RX non-blockingly for incoming display command frames or IAP wakeup
             while HardwarePeripherals::usart3_has_rx() {
                 let wire_b = HardwarePeripherals::usart3_read_byte();
                 let plain_b = wire_b ^ UART_STREAM_XOR_KEY;
+
+                // Check for IAP Wakeup / Reboot command (0xC9, 0x77)
+                if plain_b == 0xC9 || wire_b == 0xC9 {
+                    // Reset MCU into system bootloader via SCB AIRCR
+                    HardwarePeripherals::system_reset();
+                }
+
                 if let Some(cmd) = cmd_decoder.push_byte(plain_b) {
                     controller.mode = cmd.mode;
                     controller.assist = if cmd.assist_level == 0 {

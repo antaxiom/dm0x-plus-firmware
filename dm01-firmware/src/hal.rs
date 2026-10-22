@@ -65,6 +65,10 @@ impl Dm01PwmHardware {
     /// enabling output channels, and leaves Main Output Enable (`MOE`, bit 15) cleared (`0`)
     /// so all 6 MOSFET gates remain in High-Z coasting until [`Self::enable_inverter`] is called.
     pub fn init_hardware(&mut self) {
+        // Ensure peripheral clocks are enabled first
+        let rcc = HardwarePeripherals::rcc();
+        rcc.apb2enr.modify(|v| v | (1 << 11)); // TIM1EN
+
         let tim1 = HardwarePeripherals::tim1();
 
         // 0. Ensure Main Output Enable (MOE) is off while configuring timer registers
@@ -295,8 +299,10 @@ impl Dm01SensorsHardware {
             // Trigger injected conversion via JSWSTART (bit 21 in CR2)
             adc1.cr2.modify(|v| v | (1 << 21));
 
-            // Wait for JEOC (bit 2 in ADC1->SR)
-            while (adc1.sr.read() & (1 << 2)) == 0 {
+            // Wait for JEOC (bit 2 in ADC1->SR) with timeout
+            let mut timeout = 10_000u32;
+            while (adc1.sr.read() & (1 << 2)) == 0 && timeout > 0 {
+                timeout -= 1;
                 core::hint::spin_loop();
             }
 

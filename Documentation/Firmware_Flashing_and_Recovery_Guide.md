@@ -114,9 +114,17 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- flash /
    - If you attempt to flash a stock `.Pack` whose `CtlVer` is lower than the version recorded in the MCU's bootloader, the bootloader will reject the 12-byte header with a negative response (`pack version is lower`).
    - **Crucial Safety Note:** If rejected by the bootloader, the bootloader aborts before erasing Flash sectors. It **will not** brick the controller; it simply declines to proceed.
 
-### 4.2 Recovery Procedure for Corrupted / Non-Booting Controllers
+### 4.2 Recovery Procedure & Critical Bootloader Warning
 
-If the controller application is corrupted, it will not respond to the 9600 Baud wakeup packet. Follow this bootloader-catch sequence:
+> [!CAUTION]
+> ### The Potted Software-Bootloader Trap
+> ToSeven controllers use an In-Application Programming (IAP) software bootloader located at `0x08000000..0x080017FF`. 
+> - **The Normal Recovery Path:** When the application is running normally, sending the 21-byte wakeup frame (`0xC9 0x77` @ 9600 Baud) triggers a software reset (`SCB->AIRCR`) into the IAP bootloader.
+> - **The Trap:** If custom experimental firmware encounters a BusFault or HardFault during startup (e.g. accessing an un-clocked peripheral) before entering its main loop, the MCU enters an infinite spinlock with interrupts masked. It **cannot** receive the 9600 Baud software wakeup command.
+> - **Power-On Catch Limitations:** While the bootloader executes for ~200–400 ms on cold power-on, host USB-serial latency often exceeds this window. If the bootloader does not detect a valid handshake within this narrow window, it jumps straight into the corrupted application.
+> - **Definitive Recovery:** If a controller becomes unresponsive to serial commands over the Julet harness, **recovery requires depotting the aluminum shell and flashing the MCU via hardware SWD (`SWDIO`/`SWCLK`) using an ST-Link/V2**. Do not flash experimental custom motor firmware on sealed controllers unless you have an SWD rig ready.
+
+If the controller application is non-booting but the bootloader can be intercepted, follow this sequence:
 
 1. Connect the USB-to-UART adapter to the PC and the 5-pin Julet connector.
 2. Ensure the bench power supply is set to **48V @ 1.0A limit**, with the Key toggle switch **OFF**.

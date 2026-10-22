@@ -115,16 +115,17 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     // 2. Relocate Vector Table to Flash Application Base (0x08001800)
     HardwarePeripherals::set_vtor(0x0800_1800);
 
-    // 3. Initialize Physical Hardware Peripherals (starts in High-Z with MOE=0)
-    let mut pwm = Dm01PwmHardware::new();
-    pwm.init_hardware();
-
+    // 3. Initialize Physical Hardware Clocks & Sensors FIRST
     let mut sensors = Dm01SensorsHardware::new();
     sensors.init_hardware();
     // 3a. Perform 256-sample startup shunt auto-zero calibration (matching V6510C at 0x08009A6C)
     sensors.calibrate_shunts();
 
-    // 4. Configure SysTick Timer for 1 ms deterministic tick at 72 MHz (72,000 clock cycles)
+    // 4. Initialize PWM Hardware (TIM1) after clocks are active
+    let mut pwm = Dm01PwmHardware::new();
+    pwm.init_hardware();
+
+    // 5. Configure SysTick Timer for 1 ms deterministic tick at 72 MHz (72,000 clock cycles)
     HardwarePeripherals::init_systick(72_000);
 
     // 5. Initialize Hardware Watchdog (IWDG) with 500 ms safety trip window

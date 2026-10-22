@@ -17,13 +17,19 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 > No warranty is provided, whether express, implied, or statutory, including warranties of merchantability, fitness for a particular purpose, and non-infringement. Proceed strictly at your own risk.
 
 > [!CAUTION]
-> ### CRITICAL SAFETY WARNING: BENCH TESTING ONLY AT THIS STAGE
-> **DO NOT INSTALL OPEN-SOURCE FIRMWARE ONTO AN ASSEMBLED ELECTRIC BICYCLE OR ATTEMPT TO RIDE WITH IT.**
-> At this stage, the DM+ open-source motor controller firmware (`dm01_firmware` / `dm02_firmware`) is in active beta bring-up and **MUST NOT BE INSTALLED ANYWHERE OTHER THAN A CONTROLLED BENCH TEST ENVIRONMENT.**
-> - **Bench Testing Exclusively:** Only operate controllers on an adjustable DC bench power supply strictly current-limited to <= 1.0 A at 48 V.
-> - **Never Use a Lithium Battery for Initial Testing:** Do not test open-source firmware using a high-discharge lithium-ion battery pack.
-> - **Oscilloscope & Phase Verification First:** Phase commutation, ADC calibration, shunt offset subtraction, and FOC loop timings must be verified on the bench before any mechanical load is applied.
-> - **Flashing Factory Stock is Safe:** Flashing official stock `.Pack` files or patching display firmware (`.hex`) for menu unlock is fully supported. However, running custom open motor firmware on an actual bicycle is strictly prohibited at this stage.
+> ### CRITICAL SAFETY WARNING: BENCH BRING-UP ONLY & BOOTLOADER RISK
+> **DO NOT INSTALL EXPERIMENTAL OPEN-SOURCE MOTOR FIRMWARE UNLESS PREPARED FOR HARDWARE-LEVEL RECOVERY.**
+>
+> 1. **Potted Controller Vulnerability (Software Bootloader Lockout):**
+>    The ToSeven motor controller uses a software In-Application Programming (IAP) bootloader stored in the first 6 KB of Flash (`0x08000000`). If custom application firmware encounters a hardware fault (such as a BusFault or HardFault during peripheral initialization) before initializing the UART command handler, **the controller cannot be commanded to reboot via software**.
+>    - Because the physical controller is sealed in high-tensile polyurethane potting within an aluminum horseshoe casting, **recovering a locked controller requires physical depotting and direct hardware SWD flashing (ST-Link/J-Link)**.
+>    - **Do NOT flash custom bare-metal firmware (`dm01_firmware` / `dm02_firmware`) onto a sealed controller that you are unwilling or unable to depot and attach to an SWD debugger.**
+> 2. **Factory Stock Firmware & Display Tools Are Fully Safe:**
+>    - Flashing official stock factory `.Pack` firmware containers (`TO7-DM01-*.Pack`, `TO7-DM02-*.Pack`) is verified safe and reversible.
+>    - Unlocking and flashing display firmware dumps (`T24V`, `T154`, `LCD135C`, `M15`) is verified safe and operates over direct USB CDC ISP without touching the motor controller.
+> 3. **Bench Power Safety Rules:**
+>    - Never flash or test controllers using a high-discharge lithium bicycle battery. Always clamp an adjustable DC bench power supply to <= 1.0 A at 48 V.
+>    - Operating custom open motor firmware on an actual bicycle is strictly prohibited at this stage.
 
 ---
 

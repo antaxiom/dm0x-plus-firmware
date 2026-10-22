@@ -659,9 +659,26 @@ fn handle_monitor_command(args: &[String]) {
     let mut decoder = TelemetryStreamDecoder::new();
     let mut rx_buf = [0u8; 64];
     let mut step = 1usize;
+    let mut last_poll = std::time::Instant::now();
+
+    // Standard 8-byte display command frame (Mode: Sport, Assist: 1) encrypted with 0x69
+    let poll_cmd = dm01_firmware::protocol::DisplayCommandFrame {
+        headlight_on: false,
+        walk_assist_active: false,
+        mode: dm01_firmware::config::RidingMode::Sport,
+        assist_level: 1,
+    };
+    let mut poll_wire = [0u8; 8];
+    poll_cmd.encode_encrypted_wire(&mut poll_wire);
 
     loop {
-        match serial.read_timeout(&mut rx_buf, Duration::from_millis(250)) {
+        // Send heartbeat poll at 10 Hz to solicit telemetry from the controller
+        if last_poll.elapsed() >= Duration::from_millis(100) {
+            let _ = serial.write_all(&poll_wire);
+            last_poll = std::time::Instant::now();
+        }
+
+        match serial.read_timeout(&mut rx_buf, Duration::from_millis(50)) {
             Ok(n) if n > 0 => {
                 for ev in decoder.push_wire_bytes(&rx_buf[..n]) {
                     match ev {
@@ -840,7 +857,7 @@ fn handle_diagnostic_command(args: &[String]) {
 
     let port = port_arg.unwrap();
     println!("Connecting to serial port '{}' at 9600 Baud...", port);
-    println!("Listening for live telemetry frames...");
+    println!("Sending display polling heartbeat and listening for telemetry...");
 
     let mut serial = match PosixSerialPort::open(port, 9600) {
         Ok(p) => p,
@@ -854,9 +871,24 @@ fn handle_diagnostic_command(args: &[String]) {
     let mut rx_buf = [0u8; 128];
     let mut latest_triage: Option<PreFlightTriageResult> = None;
     let start = std::time::Instant::now();
+    let mut last_poll = std::time::Instant::now() - Duration::from_millis(200);
+
+    let poll_cmd = dm01_firmware::protocol::DisplayCommandFrame {
+        headlight_on: false,
+        walk_assist_active: false,
+        mode: dm01_firmware::config::RidingMode::Sport,
+        assist_level: 1,
+    };
+    let mut poll_wire = [0u8; 8];
+    poll_cmd.encode_encrypted_wire(&mut poll_wire);
 
     while start.elapsed() < Duration::from_millis(3000) {
-        match serial.read_timeout(&mut rx_buf, Duration::from_millis(200)) {
+        if last_poll.elapsed() >= Duration::from_millis(100) {
+            let _ = serial.write_all(&poll_wire);
+            last_poll = std::time::Instant::now();
+        }
+
+        match serial.read_timeout(&mut rx_buf, Duration::from_millis(50)) {
             Ok(n) if n > 0 => {
                 for ev in decoder.push_wire_bytes(&rx_buf[..n]) {
                     if let MonitorEvent::Telemetry(frame) = ev {
