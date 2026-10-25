@@ -21,8 +21,22 @@ const PACKS: &[(&[&str], MotorTarget)] = &[
     ),
     (
         &[
+            "../blobs/firmware/dm01/TO7-DM01-K261023-V6510C.Pack",
+            "blobs/firmware/dm01/TO7-DM01-K261023-V6510C.Pack",
+        ],
+        MotorTarget::Dm01,
+    ),
+    (
+        &[
             "../blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack",
             "blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack",
+        ],
+        MotorTarget::Dm02,
+    ),
+    (
+        &[
+            "../blobs/firmware/dm02/TO7-DM02-K261023-V6510C.Pack",
+            "blobs/firmware/dm02/TO7-DM02-K261023-V6510C.Pack",
         ],
         MotorTarget::Dm02,
     ),

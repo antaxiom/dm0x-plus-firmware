@@ -6,15 +6,15 @@
 //!
 //! ## Architecture
 //! - [`SerialTransport`] — Hardware-agnostic byte-stream trait supporting dynamic baud-rate
-//!   switching (`9600` $\rightarrow$ `115200` Baud for motor controller wakeup) and timed reads.
+//!   switching (`9600` $\rightarrow$ `38400` / `115200` Baud for motor controller wakeup) and timed reads.
 //! - [`PosixSerialPort`] — Concrete serial driver for macOS (`/dev/cu.usbserial-*`, `/dev/tty.usbmodem*`)
 //!   and Linux (`/dev/ttyUSB*`, `/dev/ttyACM*`) using POSIX `termios` (`stty`) raw 8N1 mode
 //!   and non-blocking file descriptor polling.
 //! - [`MockSerialPort`] — Deterministic in-memory transport simulating a real motor controller
 //!   bootloader or MegaHunt display ROM for automated integration tests.
-//! - [`execute_motor_iap_flash`] — Live motor controller flashing state machine (115200 probe,
-//!   9600 Baud 21-byte wakeup fallback, 12-byte header + modulo-256 checksum, 16-byte chunks,
-//!   1024-byte sector `0x06` ACKs, and final `0x04` EOT verification).
+//! - [`execute_motor_iap_flash`] — Live motor controller flashing state machine (38400 Baud primary probe
+//!   with 115200 fallback, 9600 Baud 21-byte wakeup fallback, 12-byte header + modulo-256 checksum,
+//!   16-byte chunks, 1024-byte sector `0x06` ACKs, and final `0x04` EOT verification).
 //! - [`execute_display_isp_flash`] — Live MegaHunt display ISP flashing state machine (Handshake1/2,
 //!   ChipInfo, ReadFlashId, EraseFlash, WriteOption, 256-byte CRC-16-CCITT chunks, and ChipUpdate).
 //! - [`TelemetryStreamDecoder`] — Sliding-window `0x69` stream-cipher frame synchronizer that
@@ -179,9 +179,8 @@ fn configure_raw_termios(fd: std::os::unix::io::RawFd, baud: u32) -> io::Result<
         termios.c_cflag &= !(libc::CSIZE | libc::PARENB | libc::CSTOPB | libc::HUPCL);
         termios.c_cflag |= libc::CS8 | libc::CREAD | libc::CLOCAL;
 
-        // Disable hardware flow control (CRTSCTS = 0x00030000 on macOS/Linux)
-        const CRTSCTS: libc::tcflag_t = 0x00030000;
-        termios.c_cflag &= !CRTSCTS;
+        // Disable hardware flow control (platform-native libc::CRTSCTS on macOS and Linux)
+        termios.c_cflag &= !libc::CRTSCTS;
 
         // Disable software flow control
         termios.c_iflag &= !(libc::IXON | libc::IXOFF | libc::IXANY);

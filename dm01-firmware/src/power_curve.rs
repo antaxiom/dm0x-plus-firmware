@@ -441,13 +441,37 @@ pub const fn apply_speed_limit_soft_taper_da(
     speed_limit_deci_kph: u16,
     walk_assist_active: bool,
 ) -> u16 {
+    let normal_window_deci_kph = if walk_assist_active { 20 } else { 15 };
+    apply_speed_limit_soft_taper_with_window_da(
+        ramped_current_da,
+        bike_speed_deci_kph,
+        speed_limit_deci_kph,
+        walk_assist_active,
+        normal_window_deci_kph,
+    )
+}
+
+/// Stage 3A: Proportional Speed Limit Soft-Taper with configurable normal-riding window (`0.1 km/h`).
+pub const fn apply_speed_limit_soft_taper_with_window_da(
+    ramped_current_da: u16,
+    bike_speed_deci_kph: u16,
+    speed_limit_deci_kph: u16,
+    walk_assist_active: bool,
+    normal_window_deci_kph: u16,
+) -> u16 {
     if speed_limit_deci_kph == 0 {
         return ramped_current_da; // Unrestricted speed limit (e.g. Throttle Mode 12)
     }
     if bike_speed_deci_kph >= speed_limit_deci_kph {
         return 0;
     }
-    let window_deci_kph: u16 = if walk_assist_active { 20 } else { 15 };
+    let window_deci_kph: u16 = if walk_assist_active {
+        20
+    } else if normal_window_deci_kph == 0 {
+        15
+    } else {
+        normal_window_deci_kph
+    };
     let taper_start = speed_limit_deci_kph.saturating_sub(window_deci_kph);
     if bike_speed_deci_kph <= taper_start {
         return ramped_current_da;
@@ -602,12 +626,13 @@ impl PowerCurveArbitrator {
             self.ramped_current_da = winning_demand_da;
         }
 
-        // 3. Proportional speed limit soft-taper (1.5 km/h normal / 2.0 km/h walk-assist)
-        let speed_tapered_da = apply_speed_limit_soft_taper_da(
+        // 3. Proportional speed limit soft-taper (configurable normal window / 2.0 km/h walk-assist)
+        let speed_tapered_da = apply_speed_limit_soft_taper_with_window_da(
             self.ramped_current_da,
             bike_speed_deci_kph,
             speed_limit_deci_kph,
             walk_assist_active,
+            profile.speed_soft_taper_window_0_1_kph,
         );
 
         // 4. Low-Voltage reserve cushion according to profile policy

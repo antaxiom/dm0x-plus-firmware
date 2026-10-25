@@ -9,14 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Bare-Metal Cortex-M4F Startup Initialization (`firmware.rs` & `firmware_dm02.rs`):**
-  - **Peripheral Clock Gating Order:** Reordered initialization so that all RCC clock gates (`RCC->APB2ENR` for TIM1, GPIOA..D, and ADCs) are asserted *before* any timer or ADC registers are touched, eliminating immediate startup BusFaults.
-  - **Bounded Shunt Calibration:** Added loop timeout bounds to `calibrate_shunts()` in `hal.rs` to ensure the MCU never hangs in an infinite spinlock when running on an isolated bench without active motor phase inputs.
-  - **SysTick Control Loop Starvation:** Fixed `systick_has_fired()` starvation in `firmware.rs` by migrating to interrupt-driven `SYSTEM_TICKS_MS` elapsed time tracking, keeping the hardware watchdog (IWDG) fed.
-  - **IAP Software Wakeup Support:** Added runtime handler for the 21-byte wakeup burst (`0xC9 0x77`) in the application main loop, allowing software-commanded reboots into IAP bootloader mode via `SCB->AIRCR`.
-
 ### Added
+- **Reverse Engineering Analysis & Support for October 23, 2026 Factory Releases (DM01 & DM02 V6510C):**
+  - **New Firmware Cataloging & Verification:**
+    - Decrypted, verified, and cataloged `TO7-DM01-K261023-V6510C.Pack` (SHA-256 `ff557c78825816d70e12dcecf83c9efba9fc4cb5908e4baefd60acee7d97fad2`) and `TO7-DM02-K261023-V6510C.Pack` (SHA-256 `efd792ce43f36dce30bf3a94a3e89bf2be0ee7f95b17b5b15fe32d119b2380de`).
+    - Both packages strictly validate against ToSeven universal key derivation formulas: Header XOR key `(pack[32] + pack[33]) & 0xFF`, Payload XOR key `(dec_hdr[30] + dec_hdr[31]) & 0xFF`, and 32-bit cumulative byte sums.
+  - **DM02 Architecture & Device ID Subtype (`0x0019_6EE4`):**
+    - Identified new DM02 board/firmware identifier `0x0019_6EE4` (`Customer_Num: 0x196E`, `Device_Type: 0xE4`).
+    - Updated `pack::MotorTarget::from_device_id()` to map `0x0019_6EE4` as a DM02 target.
+    - Disassembled 16-byte code insertion sites (+4 bytes at `0x080067FA` adding an immediate field check before NMI handling, and +12 bytes at `0x08009253` adding a communication retry state loop before USART3).
+    - Verified that DM02 factory EEPROM image (480 bytes, 5 blocks) remains 100% bit-exact identical to the May 2026 production baseline, shifting in Flash from `0x0800F142` to `0x0800F152` due to the code insertions.
+  - **DM01 Architecture & Factory EEPROM Variations (+824 Bytes):**
+    - Disassembled and traced DM01 payload code expansion (+824 bytes, 58,532 B vs. 57,708 B) and stack pointer relocation (MSP raised by 16 bytes from `0x20005628` to `0x20005638`).
+    - Decoded 24 EEPROM byte modifications in the October 23 DM01 build, revealing:
+      - Speed sensor magnet pulse count updated from 10 to 15 pulses/rev (`0x1D3`: `0x0A` -> `0x0F`).
+      - Voltage threshold adjustments in Block 1 (`0x02BC` / 70.0V -> `0x0258` / 60.0V).
+      - Multi-mode speed/power state selector updates in Block 3 and Block 4.
+      - Embedded Block 1 model string updated to `TS\x11000W`, while retaining the internal vendor template string (`"Sitgo-Rear 1700W"` in Block 2 `0x07D..0x09E` and placeholder serial `24111100001` in `0x06A..0x07B`) present across all factory DM01 releases.
+  - **Dynamic EEPROM Discovery & 17-Firmware Historical Compatibility (`V6206C`..`V6510C`):**
+    - Upgraded `EepromImage::verify_all_blocks()` and `EepromImage::find_in_payload()` to accept both `A5 01 FE` (`V6212C`..`V6510C`) and `A5 FD 02` (`V6206C` / `V6303C`) Block 1 magic signatures (`raw[0x05A] == 0xA5 && (raw[0x05B] ^ raw[0x05C]) == 0xFF`), achieving **17/17 (100%)** embedded 480-byte EEPROM extraction across all historical `.Pack` releases.
+    - Refined `parse_pack_metadata()` to auto-detect `MotorTarget::Dm01` (`TS1000W` / `TS\x11000W`) vs. `MotorTarget::Dm02` (`TS500W`) directly from the embedded EEPROM Block 1 model signature, resolving cross-version header `Device_ID` byte (`dec_hdr[0]`) variations across all 17 factory packs.
+    - Added `PackMetadata::firmware_version_number()` returning the decimal firmware version (`6206`, `6212`, `6303`, `6306`, `6400`, `6510`) from `decrypted_header[1..3]`.
+    - Added native `V6510C` 7-bit UART display protocol support (`0xC0 | cmd` .. `0x80 | crc_lo` with 3-byte packed `crc16_toseven` trailer, `V6510cDisplayCommandDecoder`, and `TelemetryFrame::encode_v6510c_*` builders) in `protocol.rs` and integrated it into `firmware.rs` and `firmware_dm02.rs`.
+    - Updated `hal.rs` and `pac.rs` to match the decompiled `V6510C` GPIO/AFIO/Timer pinout (`AFIO->MAPR` `SWJ_JTAGDisable` + `PD01_REMAP`, `PD0` + `PA15` quadrature PAS cadence, `PA3` external wheel speed sensor, `PC15` headlight output, and `PA2` status/fault LED).
+    - Updated `dm01-firmware` stock registry (`stock::KNOWN_RELEASES`) and universal container test suites to cover all 17 known factory releases with 100% bit-exact roundtrips.
 - **Critical Flashing Warnings & Potted Bootloader Documentation:**
   - Added prominent warnings in [`README.md`](README.md), [`Firmware_Flashing_and_Recovery_Guide.md`](Documentation/Firmware_Flashing_and_Recovery_Guide.md), and [`Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md) explaining the software bootloader trap: if custom experimental firmware faults before initializing serial communication, software IAP recovery becomes impossible over the wire harness and requires physical depotting + SWD debugging.
   - Added multi-baud bootloader detection utility [`scripts/bootloader_catcher.py`](scripts/bootloader_catcher.py).

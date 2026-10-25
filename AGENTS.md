@@ -10,8 +10,8 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 
 ## Workspace Structure
 - [`dm01-firmware/`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/Cargo.toml) — `#![no_std]`-compatible Rust firmware recompilation and `.Pack` tooling crate (`v0.3.0`):
-  - [`src/pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pack.rs) — `.Pack` firmware container parser, auto-key detector (`0xA8`/`0x67` for DM01, `0xF7`/`0xE2` for DM02), Cortex-M4F vector table validator, and bit-exact `.Pack` repacker.
-  - [`src/eeprom.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/eeprom.rs) — 5-block (`0x20, 0x40, 0x40, 0xA0, 0xA0` = 480 bytes) Flash EEPROM configuration manager (`0x0801FC00`), `0xA5` XOR cipher, `A5 01 FE` magic check, 16-entry nibble CRC-16 (`crc16_toseven`), and embedded bit-exact DM01 (`TS1000W`) & DM02 (`TS500W`) factory EEPROM images.
+  - [`src/pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pack.rs) — `.Pack` firmware container parser, auto-key detector (`0xA8`/`0x67` for DM01, `0xF7`/`0xE2` for DM02), embedded EEPROM model target auto-detector (`TS1000W` vs `TS500W` across all 17 historical releases), decimal version extractor (`decrypted_header[1..3]`), Cortex-M4F vector table validator, and bit-exact `.Pack` repacker.
+  - [`src/eeprom.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/eeprom.rs) — 5-block (`0x20, 0x40, 0x40, 0xA0, 0xA0` = 480 bytes) Flash EEPROM configuration manager (`0x0801FC00`), `0xA5` XOR cipher, universal `A5 v ~v` magic check (`A5 01 FE` in `V6212C..V6510C` and `A5 FD 02` in `V6206C` / `V6303C`), 16-entry nibble CRC-16 (`crc16_toseven`), dynamic payload scanner (`find_in_payload`), and embedded bit-exact DM01 (`TS1000W`) & DM02 (`TS500W`) factory EEPROM images.
   - [`src/power_curve.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/power_curve.rs) — Exact decompiled `V6510C` integer-math power curve pipeline:
     - Stage 1: Riding Mode ceilings (`Eco`/`City`/`Sport`), continuous linear thermal rollback (`70°C..100°C` anchored to Sport ceiling), high-voltage constant-power cap (above `50.0 V`), and the dual-ceiling split (**Global Mode Ceiling** for Torque vs. **Level Power Ceiling** `Pwr%` for PAS/Throttle).
     - Stage 2: Torque Sensor 5-sample auto-zero drift tracker (`4:1` IIR within `400..1000 mV`), configurable IIR pedal filter, `StrengthValue * EAssist%` effort multiplier, `CurrentOffset`, and `max(Cadence, 5) / 60` cadence scaling; Cadence (PAS) linear ramp; Throttle 8-tap filter & `200 mV/step` slew-rate limiter.
@@ -22,14 +22,14 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
     - `AssistCeilingPolicy`: `StockDualCeiling` (torque ignores assist level `Pwr%`) vs. `UnifiedLevelCeiling` (torque respects assist level limit).
     - Built-in presets: `stock_v6510c()`, `uncapped_cadence()`, `progressive_trail()`, `commuter_comfort()`.
   - [`src/foc.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/foc.rs) — Fixed-point `Q15` and Cortex-M4F single-precision FPU (`f32`) Clarke/Park transforms, `AutoCurrentPID`, flux weakening, Hall sensor + PLL velocity/angle observer, and 7-segment SVPWM with `[0.06, 0.94]` dead-time linear duty shaping.
-  - [`src/protocol.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/protocol.rs) — Display UART protocol with `0x69` stream XOR cipher and ToSeven CRC-16 verification.
+  - [`src/protocol.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/protocol.rs) — Display UART protocol with `0x69` stream XOR cipher, ToSeven CRC-16 verification, 18-byte `0x5A` framing, and native `V6510C` 7-bit `0xC0 | cmd` .. `0x80 | crc_lo` command/telemetry codecs (`V6510cDisplayCommandDecoder`).
   - [`src/stock.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/stock.rs) — Pinned SHA-256 registry of known official factory `.Pack` releases.
   - [`src/sha256.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sha256.rs) — Dependency-free `#![no_std]` SHA-256 digest engine.
-  - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs) — High-level controller state machines.
+  - [`src/config.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/config.rs), [`src/sensors.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/sensors.rs), [`src/control.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/control.rs), [`src/calibration.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/calibration.rs), [`src/thermal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/thermal.rs), [`src/battery.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/battery.rs), [`src/faults.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/faults.rs), [`src/simulation.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/simulation.rs) — High-level controller state machines, self-commissioning, and physical ride simulation harness.
   - [`src/flasher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/flasher.rs) — Motor controller IAP flashing state machine (38400 Baud factory bootloader default with 115200 fallback, 21-byte wakeup packet encoder at 9600 Baud with `uart_mask` nibbles, separated `0x06` prep + 12-byte header frame builder with `uart_mask`, 16-byte chunk with Tier 2 wire stream XOR cipher `b ^ uart_mask`, 1 KB sector pacing, and Step 5 EOT `0x04` / NAK `0x15` verification), and MegaHunt display ISP framing & session state machine (`0x02`, CMD, len, CRC-16-CCITT).
   - [`src/serial.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/serial.rs) — Native cross-platform serial transport supporting POSIX termios (macOS/Linux) with `IOSSIOSPEED` custom-baud ioctl and Win32 COM port engine (`QueryDosDeviceW`, 64-bit sign-extended registry `SERIALCOMM`, `CreateFileW` probe fallback across `COM1..COM32`, non-blocking `COMMTIMEOUTS`, DCB line configuration), hardware line assertions (`DTR`/`RTS`), live IAP/ISP session execution, and universal adapter enumeration (`/dev/cu.*`, `/dev/ttyUSB*`, `COM1..COM255`).
   - [`src/display_patcher.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/display_patcher.rs) — Display firmware Intel HEX parser, vector table validator, automated 3-gate post-October 2024 lockout detector, and ARM Thumb NOP (`0x00BF`) clean-room patcher for `T24V`, `T154`, `LCD135C`, and `M15`.
-  - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `FLASH`, `IWDG`, `SCB`) and embedded Flash controller drivers.
+  - [`src/pac.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/pac.rs) & [`src/hal.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/hal.rs) — Direct memory-mapped peripheral register bindings (`TIM1`, `ADC1/2`, `USART3`, `GPIOA..D`, `FLASH`, `IWDG`, `SCB`, `NVIC`) and concrete DM01/DM02 hardware peripheral drivers.
   - [`src/bin/firmware.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware.rs) & [`src/bin/firmware_dm02.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/firmware_dm02.rs) — Standalone bare-metal Cortex-M4F open firmware targets (`dm01_firmware` MSP `0x20005628` and `dm02_firmware` MSP `0x20005620`), speaking standard 18-byte display protocol, using Page 127 Flash EEPROM persistence, 256-sample startup shunt auto-zero calibration, TIM1 break trip protection, with gear-safe progressive knee, sensorless speed fallback, smooth FOC, and thermal rollback.
   - [`memory.ld`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/memory.ld) & [`build.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/build.rs) — Cortex-M4F Flash (`0x08001800`) / SRAM (`0x20000000`) linker script with automated cargo search configuration.
   - [`src/bin/toseven_pack.rs`](file:///Users/alouk/Documents/ToSeven%20Reverse%20Engineering/dm01-firmware/src/bin/toseven_pack.rs) — Unified CLI utility (`toseven_pack`) to inspect, unpack, repack, create (directly from ELF or raw binary), objcopy, verify, and flash motor controller `.Pack` containers, as well as inspect (`display info`), permanently unlock (`display patch`), and flash (`display flash [--unlock]`) display `.hex` firmware.
@@ -90,7 +90,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 
 ## Common Build & Verification Commands
 ```bash
-# Run all unit, integration, and simulation tests (78 tests)
+# Run all unit, integration, and simulation tests (79 tests)
 cargo test --manifest-path dm01-firmware/Cargo.toml
 
 # Check strict formatting and clippy lints
@@ -159,7 +159,18 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 
 # Package local host release artifacts (CLI & GUI) into dist/
 ./scripts/package-release.sh
+
+# Update Reverse Engineer Anything (REA) tools and MCP registration
+npx -y rea-agents@latest setup --client antigravity --yes
+npx -y rea-agents@latest doctor --client antigravity
 ```
+
+---
+
+## Tooling & REA (Reverse Engineer Anything) Maintenance Policy
+1. **Regular Updates:** Periodically check and update the REA environment (`npx -y rea-agents@latest setup --client antigravity --yes`).
+2. **Health Verification:** Run `npx -y rea-agents@latest doctor --client antigravity` to confirm MCP registration, tool catalog sync, and provider availability (Hopper, Ghidra, Cutter/Rizin).
+3. **Registration Integrity:** Ensure `/Users/alouk/.gemini/config/mcp_config.json` retains the current `rea-agents@<version>` command specification without drifting against older cached installations.
 
 ---
 

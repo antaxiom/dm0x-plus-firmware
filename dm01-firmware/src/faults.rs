@@ -65,6 +65,35 @@ impl FaultFlags {
         }
         (self.0 & critical) != 0
     }
+
+    /// Maps the highest-priority active fault to the 7-bit ToSeven display error code (`cmd 0x32` / `0xF2`, `@0x08006680`).
+    pub const fn to_v6510c_display_code(self) -> u8 {
+        if self.contains(Self::CONTROLLER_MOSFET_FAIL) {
+            0x21
+        } else if self.contains(Self::GALLOP_THROTTLE_FAIL) {
+            0x22
+        } else if self.contains(Self::MOTOR_BLOCKED) {
+            0x23
+        } else if self.contains(Self::MOTOR_HALL_FAIL) {
+            0x24
+        } else if self.contains(Self::TORQUE_SENSOR_FAULT) {
+            0x25
+        } else if self.contains(Self::SPEED_SENSOR_FAIL) {
+            0x26
+        } else if self.contains(Self::CONTROLLER_OVER_TEMP) || self.contains(Self::MOTOR_OVER_TEMP)
+        {
+            0x27
+        } else if self.contains(Self::LOW_VOLTAGE) {
+            0x28
+        } else if self.contains(Self::CONTROLLER_MEMORY_FAIL) {
+            0x29
+        } else if self.contains(Self::COMM_RECEPTION_FAIL) || self.contains(Self::PROTOCOL_DISMATCH)
+        {
+            0x30
+        } else {
+            0x00
+        }
+    }
 }
 
 /// Stateful fault detector monitoring startup torque calibration and runtime error conditions.

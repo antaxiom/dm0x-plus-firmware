@@ -286,6 +286,6 @@ ToSeven displays (`T24V`, `T154`, `LCD135C`, `M15`) use a MegaHunt MH1903/MH2020
 | :--- | :--- | :--- |
 | **No serial response / Timeout waiting for IDENT** | RX/TX reversed or baud rate mismatch | Swap USB-UART RX and TX. Verify Ground pin is connected. Power cycle controller using Key switch while flasher is probing. |
 | **Current immediately hits 1.0A clamp on power-up** | Reverse polarity or shorted VBat rail | Cut power immediately. Check harness wiring with DMM. Verify resistance between Pin 1 and Pin 3 exceeds 10 kΩ. |
-| **Telemetry receives framing errors / garbage bytes** | Unconnected GND or baud rate mismatch | Verify baud rate is 9600 Baud for telemetry (flasher uses 115200 Baud). Confirm USB-UART GND is firmly soldered to Pin 3. |
+| **Telemetry receives framing errors / garbage bytes** | Unconnected GND or baud rate mismatch | Verify baud rate is 9600 Baud for telemetry (flasher uses 38400 Baud with 115200 fallback). Confirm USB-UART GND is firmly soldered to Pin 3. |
 | **Flash completes but motor does not turn** | Brake cutoff engaged or throttle voltage out of range | Check telemetry frame fault flags in `monitor`. Ensure brake sensors are disconnected or normally open. |
 | **Total bootloader brick (no IDENT after interrupted flash)** | Flash vector table corrupted | The ToSeven hardware bootloader resides in protected ROM (`0x1FFFD800` or `0x08000000..0x080017FF`) and cannot be erased by IAP writes. Power cycle the Key switch while launching `toseven_pack flash` to catch the initial ROM boot sequence. |

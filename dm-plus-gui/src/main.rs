@@ -513,15 +513,16 @@ fn main() -> Result<(), slint::PlatformError> {
     // Callback: Flash Motor (Handles both Dry-Run and Live Hardware Flash in a background thread)
     let handle_weak = main_window.as_weak();
     main_window.on_flash_motor(
-        move |source_str, custom_path_str, target_str, _street_legal_str, port_str, is_dry_run, _max_amps, _battery_volts| {
+        move |source_str, custom_path_str, target_str, street_legal_str, port_str, is_dry_run, max_amps, battery_volts| {
             if let Some(ui) = handle_weak.upgrade() {
                 let port = port_str.as_str().trim().to_string();
                 let source = source_str.as_str().to_string();
                 let custom_path = custom_path_str.as_str().to_string();
+                let compliance_label = street_legal_str.as_str().to_string();
+                let battery_label = format!("{}V", battery_volts);
                 let is_dm02 = target_str.contains("DM02");
                 let max_ceiling = if is_dm02 { 20 } else { 32 };
-                let _clamped_amps = _max_amps.min(max_ceiling).max(5);
-                let _is_dm01 = !is_dm02;
+                let clamped_amps = max_amps.min(max_ceiling).max(5);
 
                 // Resolve target .Pack bytes (uses embedded firmware for built-in, or reads custom file)
                 let pack_bytes = match get_motor_pack_bytes(&source, &custom_path) {
@@ -540,6 +541,17 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                 };
 
+                // Guard against flashing a DM01 .Pack onto a selected DM02 target (or vice versa)
+                if (is_dm02 && meta.target == dm01_firmware::pack::MotorTarget::Dm01)
+                    || (!is_dm02 && meta.target == dm01_firmware::pack::MotorTarget::Dm02)
+                {
+                    ui.set_motor_status(SharedString::from(format!(
+                        "Error: Selected target ({}) does not match .Pack container target ({:?}).",
+                        target_str, meta.target
+                    )));
+                    return;
+                }
+
                 let mut payload = vec![0u8; meta.payload_len];
                 if let Err(e) = decrypt_payload(&pack_bytes, &meta, &mut payload) {
                     ui.set_motor_status(SharedString::from(format!("Decryption error: {:?}", e)));
@@ -547,6 +559,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
 
                 let customer_num = meta.customer_num();
+                let wakeup_pkt = dm01_firmware::flasher::build_wakeup_packet(
+                    payload.len() as u32,
+                    meta.payload_checksum,
+                    meta.uart_mask,
+                    customer_num,
+                );
+                let header_pkt = dm01_firmware::flasher::build_header_packet(
+                    payload.len() as u32,
+                    meta.payload_checksum,
+                    meta.uart_mask,
+                    0,
+                );
 
                 // Put UI into flashing state
                 ui.set_motor_is_flashing(true);
@@ -557,18 +581,29 @@ fn main() -> Result<(), slint::PlatformError> {
                 // Spawn background worker thread to prevent freezing the GUI
                 thread::spawn(move || {
                     if is_dry_run {
-                        // Simulated Dry-Run Execution
+                        // Validated Dry-Run Execution using real wakeup/header packets and payload metadata
+                        let summary_msg = format!(
+                            "Dry-Run complete: {:?} ({}B, {}A limit, {}, {}) verified (Wakeup {:02X}{:02X}, Header {:02X}{:02X}).",
+                            meta.target,
+                            payload.len(),
+                            clamped_amps,
+                            battery_label,
+                            compliance_label,
+                            wakeup_pkt[0],
+                            wakeup_pkt[1],
+                            header_pkt[0],
+                            header_pkt[1]
+                        );
                         let steps = [
-                            (0.15, "Dry-Run: Probing bootloader at 38400 Baud..."),
-                            (0.30, "Dry-Run: Received IDENT (0x02, 0xFD). Sending wakeup frame..."),
-                            (0.45, "Dry-Run: Header frame accepted (0x06 ACK)..."),
-                            (0.65, "Dry-Run: Simulating 16-byte chunk and 1 KB sector pacing..."),
-                            (0.85, "Dry-Run: Verifying payload CRC-16 checksum..."),
-                            (1.00, "Dry-Run complete: Handshake, sectors, and checksums 100% verified."),
+                            (0.15, "Dry-Run: Probing bootloader at 38400 Baud...".to_string()),
+                            (0.30, "Dry-Run: Received IDENT (0x02, 0xFD). Sending wakeup frame...".to_string()),
+                            (0.45, "Dry-Run: Header frame accepted (0x06 ACK)...".to_string()),
+                            (0.65, "Dry-Run: Simulating 16-byte chunk and 1 KB sector pacing...".to_string()),
+                            (0.85, "Dry-Run: Verifying payload CRC-16 checksum...".to_string()),
+                            (1.00, summary_msg),
                         ];
-                        for (prog, msg) in steps {
+                        for (prog, msg_str) in steps {
                             thread::sleep(Duration::from_millis(250));
-                            let msg_str = msg.to_string();
                             let h = handle_ui.clone();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = h.upgrade() {
@@ -729,7 +764,13 @@ fn main() -> Result<(), slint::PlatformError> {
             };
 
             if auto_unlock {
-                let _ = patch_display(&mut hex_file);
+                if let Err(e) = patch_display(&mut hex_file) {
+                    ui.set_display_status(SharedString::from(format!(
+                        "Auto-unlock patch failed: {:?}",
+                        e
+                    )));
+                    return;
+                }
             }
 
             let (base_addr, bin) = match hex_file.to_flat_binary() {

@@ -34,7 +34,8 @@ blobs/
 | **DM01 V6510C** | `firmware/dm01/TO7-DM01-K250731-V6510C.Pack` | `0f9815339647faf9bcf46f58cae6d333285ddcfcc8abe8853ace9f631fd815e3` | V6510C release (Jul 31, 2025, 128 KB) |
 | **DM01 V6510C** | `firmware/dm01/TO7-DM01-K250926-V6510C.Pack` | `3abd0a9ef915b2f40f40353bc82fcec730d4232f4891648d7b1b7ef04d30fbfd` | V6510C release (Sep 26, 2025, 128 KB) |
 | **DM01 V6510C** | `firmware/dm01/TO7-DM01-K260108-V6510C.Pack` | `c0091ef7958928e6ccd684bf61a6e4b23a5d171db68a3e05892e7cf1d3b6a8ca` | V6510C release (Jan 08, 2026, 128 KB) |
-| **DM01 V6510C (Latest)** | `firmware/dm01/TO7-DM01-K260521A-V6510C.Pack` | `eb964a1787ba90f35965921353911c8a6e3083e1914cf422caeaa515f36ee579` | Official V6510C latest production release (May 21, 2026, 128 KB) |
+| **DM01 V6510C** | `firmware/dm01/TO7-DM01-K260521A-V6510C.Pack` | `eb964a1787ba90f35965921353911c8a6e3083e1914cf422caeaa515f36ee579` | Official V6510C production release (May 21, 2026, 128 KB) |
+| **DM01 V6510C (Latest)** | `firmware/dm01/TO7-DM01-K261023-V6510C.Pack` | `ff557c78825816d70e12dcecf83c9efba9fc4cb5908e4baefd60acee7d97fad2` | Official V6510C latest release (Oct 23, 2026, 128 KB) |
 
 ---
 
@@ -49,7 +50,8 @@ blobs/
 | **DM02 V6400C** | `firmware/dm02/TO7-DM02-K250402-V6400C.Pack` | `c4fcead3e6239cc4b786f2d25601b22d9633af1fd2ef4863e2d333368507fd66` | V6400C release (Apr 02, 2025, 128 KB) |
 | **DM02 V6510C** | `firmware/dm02/TO7-DM02-K250801-V6510C.Pack` | `36c61d4581b7042df1c05e3ff974a161d8b6ba8e5d93f612e11ab1c1b3f156ce` | V6510C release (Aug 01, 2025, 128 KB) |
 | **DM02 V6510C** | `firmware/dm02/TO7-DM02-K260203-V6510C.Pack` | `7a75ab23c82fe918bc8086ec599cf2b1a9f976d66ab62daf5fce095b5f1b9035` | V6510C release (Feb 03, 2026, 128 KB) |
-| **DM02 V6510C (Latest)** | `firmware/dm02/TO7-DM02-K260526-V6510C.Pack` | `3ab150d10d3106080233d4f41e7df6a13f67154994138d831df67b1094ea1ca2` | Official V6510C latest production release (May 26, 2026, 128 KB) |
+| **DM02 V6510C** | `firmware/dm02/TO7-DM02-K260526-V6510C.Pack` | `3ab150d10d3106080233d4f41e7df6a13f67154994138d831df67b1094ea1ca2` | Official V6510C production release (May 26, 2026, 128 KB) |
+| **DM02 V6510C (Latest)** | `firmware/dm02/TO7-DM02-K261023-V6510C.Pack` | `efd792ce43f36dce30bf3a94a3e89bf2be0ee7f95b17b5b15fe32d119b2380de` | Official V6510C latest release (Oct 23, 2026, 128 KB) |
 | **TO7L-DM02 V6306C** | `firmware/dm02/TO7L-DM02-K240723A-V6306C.Pack` | `435aae3703971d92ee3a14342f0ae677491fb34fdc5f645bb919d41da40cb6a2` | V6306C release for TO7L series (Jul 23, 2024, 128 KB) |
 
 ---
@@ -69,7 +71,7 @@ blobs/
 ### 4. Official Programming & Flashing Utilities (`programming/`)
 | Utility | File Path | SHA-256 Checksum | Description |
 | :--- | :--- | :--- | :--- |
-| **TO7-G2 IAP Tool v5.2 (Factory)** | `programming/TO7-G2 IAP Tool Ver 5.2-CMD-20002-2025-3-27-Factory.exe` | `b6738dbd4df037eb8edd3bb0be0c182dd4b6d9e08fb48f4d8c9035687d8fd15c` | Official Delphi factory IAP flasher v5.2 (115200 Baud) |
+| **TO7-G2 IAP Tool v5.2 (Factory)** | `programming/TO7-G2 IAP Tool Ver 5.2.exe` | `b6738dbd4df037eb8edd3bb0be0c182dd4b6d9e08fb48f4d8c9035687d8fd15c` | Official Delphi factory IAP flasher v5.2 (115200 Baud) |
 | **TO7-G2 IAP Tool v5.1 (No Rollback)** | `programming/TO7-G2 IAP Tool Ver 5.1-20002-2-SKIP-VERSION-CHECK.exe` | `9075a0c70ab3ad9d5ee59c230f7c0782acc619f6171a2633f9aed08335f5b038` | Version check disabled utility for downgrade testing |
 | **FOC IAP Tool v3.1** | `programming/FOC IAP Tool Ver 3.1-CMD-119-20002.exe` | `7298958cf20ae5c74e95ebbed74291d5f8588b0010273788b18938766929be5d` | Legacy Delphi flasher v3.1 (CMD 119) |
 | **M4 FOC IAP Tool (C# / .NET)** | `programming/M4FOCIAP413CMD.exe` | `e3e443a6f30f2f91739433c629ba42598e45e45ed0f99a78662b7c60fe9ad9b9` | MinShine .NET flasher (38400 Baud) with complete debug PDB |
@@ -90,11 +92,6 @@ blobs/
 
 ## Tooling Reference
 
-The CLI tool `toseven_pack` searches the following default paths if specific arguments are not given:
-- DM01 default: `blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack`
-- DM02 default: `blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack`
-
-Or via environment variable:
-```bash
-export TOSEVEN_BLOBS_DIR="/path/to/external/storage/blobs"
-```
+The automated test suite and CLI tool `toseven_pack` search the following standard workspace paths when verifying stock releases:
+- DM01 latest: `blobs/firmware/dm01/TO7-DM01-K260521A-V6510C.Pack`
+- DM02 latest: `blobs/firmware/dm02/TO7-DM02-K260526-V6510C.Pack`

@@ -47,7 +47,7 @@ Here is the verified functionality available in this repository:
    - Pre-built binary packages generated for Linux x86_64, Windows x64, and macOS Universal (`.app`).
 
 2. **Motor Controller IAP Flasher & Container Engine (`toseven_pack` & GUI):**
-   - **Universal Container Support:** Automatic key derivation and payload decryption across all 15 official DM01 and DM02 factory releases.
+   - **Universal Container Support:** Automatic key derivation and payload decryption across all 17 official DM01 and DM02 factory releases.
    - **Robust Flashing Protocol Engine:** Full handshake state machine supporting dual-baud bootloader probing (38400 / 115200 baud), automated wakeup framing, paced sector streaming, and physical wire stream cipher masking.
    - **Direct ELF-to-.Pack Packaging:** Natively extracts loadable segments directly from Cortex-M ELF binaries into official 128 KB `.Pack` containers without requiring external `objcopy` utilities.
    - **Bit-Exact Verification:** Verifies container integrity and byte-exact roundtrips matching official vendor tooling.
@@ -62,7 +62,7 @@ Here is the verified functionality available in this repository:
    - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time margins (6.0% to 94.0%), and PLL Hall velocity/angle observer.
    - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport) and **DM02** (internal 6-FET, 18A Sport), with safe firmware ceilings (32.0 A max for DM01, 20.0 A max for DM02) and active UI/firmware warnings whenever exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
    - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` and `dm02_firmware`.
-   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft assist (<= 30%) below 18 RPM protecting the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic response.
+   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft assist (<= 40% at the 18 RPM knee, or <= 30% via display proxy) protecting the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic response.
    - **Unified Level Ceilings (`UnifiedLevelCeiling`):** Assist Level 1 strictly respects configured power limits rather than drawing full mode current under heavy pedaling.
    - **Automatic Dynamic Span Tracking (`AutoSpanTracking`):** Dynamic effort scaling that adapts to resting zero-point thermal drift, allowing riders to reach full assist across all riding temperatures.
    - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact 0.0 A across a 3.0 V reserve window, eliminating sudden BMS cutouts under battery sag.
@@ -75,7 +75,7 @@ Here is the verified functionality available in this repository:
      - **Automated Motor Self-Commissioning:** Safe, low-power automated self-commissioning procedure executing rotor alignment, Hall sequence check, electrical angle offset detection, and phase wiring validation.
 
 5. **Physical Simulation & Verification Suite:**
-   - 78 automated unit, integration, and physical simulation tests running in CI (69 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests).
+   - 79 automated unit, integration, and physical simulation tests in `dm01-firmware` (70 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests) plus 11 GUI integration tests (`90` workspace tests total).
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
    - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift, throttle idle voltage, and controller/motor thermals prior to applying main battery power.
    - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller memory over standard display UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash wear.
@@ -144,7 +144,7 @@ Below are concise summaries of core technical solutions addressing community fee
 
 | Feature / Subsystem | Stock Factory Firmware | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
 | :--- | :--- | :--- | :--- |
-| **Low-Cadence Climbing Power** | Strict linear scaling; assist cut by 60% at 25 RPM | **Selectable Profiles:** Gear-Safe Progressive (default, <= 30% under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | More power on steep hill starts without nylon gear damage |
+| **Low-Cadence Climbing Power** | Strict linear scaling; assist cut by 60% at 25 RPM | **Selectable Profiles:** Gear-Safe Progressive (default, <= 40% under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | More power on steep hill starts without nylon gear damage |
 | **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor ignores assist level `Pwr%` and uses Mode Max | **Unified Level Ceiling Policy:** Assist Level 1 strictly respects configured `Pwr%` limit | Predictable power scaling and battery conservation across assist levels |
 | **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, progressive boost on steep climbs | Natural trail feel; reduced leg fatigue for urban commuting |
 | **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes to physical Hall pins; decays to zero velocity when stationary | Smooth takeoff without shudder or runaway assist |
@@ -211,10 +211,10 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- unpack 
 cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --release
 
 # Extract raw Flash image from compiled ELF
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
 
 # Package directly from ELF into official ToSeven .Pack firmware container
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 dm01-firmware/target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
 
 # Cryptographically verify container integrity and bit-exact round-trip
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify <firmware.Pack>
@@ -283,22 +283,33 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 ```text
 ├── dm01-firmware/           # Core #![no_std] Rust firmware crate & CLI
 │   ├── src/
+│   │   ├── lib.rs           # Crate root & module exports
 │   │   ├── power_curve.rs   # Exact integer power curve pipeline & arbitration
 │   │   ├── tuning.rs        # Source-level tuning profiles (uncapped cadence, progressive torque)
 │   │   ├── foc.rs           # Clarke/Park, SVPWM, and PLL Hall observer
+│   │   ├── calibration.rs   # Automated low-power motor self-commissioning state machine
+│   │   ├── config.rs        # MotorConfig, assist levels, drivetrain & compliance rules
+│   │   ├── control.rs       # High-level controller state machine & EN15194 enforcement
+│   │   ├── sensors.rs       # Analog/digital sensor filters & cadence/speed trackers
+│   │   ├── thermal.rs       # NTC thermistor lookup & continuous thermal rollback
+│   │   ├── battery.rs       # 6-point SoC curve, sag filter & LVC reserve cushion
+│   │   ├── faults.rs        # Official display fault flags & runtime fault detector
 │   │   ├── eeprom.rs        # Flash EEPROM storage manager & CRC-16
 │   │   ├── flasher.rs       # IAP wakeup, header framing, chunk pacing & display ISP
+│   │   ├── serial.rs        # Native POSIX/Win32 serial transport & live flasher
 │   │   ├── display_patcher.rs # Intel HEX parser & clean-room NOP lockout bypass
 │   │   ├── pack.rs          # .Pack container parser, cipher, and repacker
 │   │   ├── pac.rs           # Memory-mapped peripheral register bindings
-│   │   ├── hal.rs           # Concrete DM01 hardware drivers
-│   │   ├── protocol.rs      # Display UART protocol & wire cipher
-│   │   ├── stock.rs         # Known official release registry (15 factory releases)
+│   │   ├── hal.rs           # Concrete DM01/DM02 hardware drivers
+│   │   ├── protocol.rs      # Display UART protocol, live param decoder & wire cipher
+│   │   ├── simulation.rs    # Comparative physical ride simulation harness
+│   │   ├── stock.rs         # Known official release registry (17 factory releases)
 │   │   ├── sha256.rs        # Embedded no_std SHA-256 digest
-│   │   ├── bin/
-│   │   │   ├── firmware.rs  # Standalone bare-metal Cortex-M4F firmware entry point & vector table
-│   │   │   └── toseven_pack.rs # CLI packaging, unpacking, verify, and flashing tool
-│   │   └── memory.ld        # Flash and SRAM linker script for bare-metal targets
+│   │   └── bin/
+│   │       ├── firmware.rs      # Standalone bare-metal DM01 Cortex-M4F firmware entry point
+│   │       ├── firmware_dm02.rs # Standalone bare-metal DM02 Cortex-M4F firmware entry point
+│   │       └── toseven_pack.rs  # CLI packaging, unpacking, verify, and flashing tool
+│   ├── memory.ld            # Flash and SRAM linker script for bare-metal targets
 │   └── tests/
 │       ├── simulation_suite.rs # 6 end-to-end comparative physical ride scenarios
 │       └── stock_identity.rs   # Bit-exact stock roundtrip & tuning tests
@@ -309,23 +320,28 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 │   └── src/
 │       └── main.rs          # Asynchronous flashing threads, file pickers, and serial integration
 ├── scripts/
+│   ├── bootloader_catcher.py # Multi-baud bootloader probe & sniffer utility
 │   └── package-release.sh   # Local release packaging script for current host OS
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml           # Continuous integration (linter, unit tests, no_std, simulations)
+│       ├── ci.yml           # Continuous integration (linter, unit tests, no_std, bare-metal, simulations)
 │       └── release.yml      # Cross-platform release matrix (Linux, macOS Universal, Windows)
 ├── Documentation/
 │   ├── Firmware_Flashing_and_Recovery_Guide.md # Step-by-step flashing & unbricking recovery runbook
+│   ├── Forensic_Firmware_Gap_Analysis_V6510C_vs_Open_Firmware.md # Forensic comparison vs stock V6510C
 │   ├── Bench_Testing_Bringup_Guide.md # Hardware bring-up runbook, Julet pinouts, bench setup
 │   ├── ToSeven_Controller_Depotting_and_Diagnostics_Guide.md # Thermal depotting, polyurethane release & board triage
 │   ├── ToSeven_IAP_Flashing_Protocol.md # Clean-room IAP UART and display ISP flashing spec
 │   ├── ToSeven_Display_Firmware_Architecture.md # Display architecture, throttle modes, lockout bypass
+│   ├── ToSeven_Bluetooth_and_App_Protocol.md # BLE GATT profile & mobile app protocol specification
 │   ├── DM01_Hardware_Specification.md # Complete reverse-engineered register map and pinout
 │   ├── DM01_Power_Curve_Guide.md # Comprehensive guide explaining power delivery
 │   ├── Official_Specifications.md # Hardware limits, pinouts, and manual references
 │   └── Research_Downgrade_and_Update.md # Container encryption & IAP bootloader notes
 ├── blobs/                   # External proprietary assets (.gitignore'd for clean-room legal safety)
-│   └── README.md            # Verified SHA-256 asset catalog (25 verified files)
+│   └── README.md            # Verified SHA-256 asset catalog (29 verified files)
+├── THIRD_PARTY_NOTICES.md   # Third-party dependency licensing notices
+├── CHANGELOG.md             # Release and stock firmware forensic changelog
 ├── AGENTS.md                # Technical project reference & reverse engineering notes
 └── README.md                # Project overview and roadmap (this file)
 ```

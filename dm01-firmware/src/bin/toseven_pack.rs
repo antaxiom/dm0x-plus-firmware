@@ -60,7 +60,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Bench Triage & Live Parameter Tuning (No Reboot / No EEPROM Wear):");
     eprintln!("  toseven_pack diagnostic [port] [--simulate]");
-    eprintln!("  toseven_pack tune [port] [--sport <A>] [--city <A>] [--eco <A>] [--speed <km/h>] [--simulate]");
+    eprintln!("  toseven_pack tune [port] [--sport <A>] [--city <A>] [--eco <A>] [--speed <km/h>] [--mode <0..12>] [--ceiling <0|1>] [--simulate]");
     eprintln!();
     eprintln!("Live UART Telemetry & Bus Monitor:");
     eprintln!("  toseven_pack monitor <port> [--baud <9600|115200>]");
@@ -1083,6 +1083,11 @@ fn main() {
         process::exit(1);
     }
 
+    if args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return;
+    }
+
     let cmd = args[1].as_str();
 
     if cmd == "display" {
@@ -1276,6 +1281,14 @@ fn main() {
         let mut out_pack = [0u8; PACK_FILE_SIZE];
         if let Err(e) = repack_firmware(&meta, &payload, None, &mut out_pack) {
             eprintln!("Error packing firmware: {:?}", e);
+            process::exit(1);
+        }
+
+        if let Err(e) = parse_pack_metadata(&out_pack) {
+            eprintln!(
+                "Error validating generated .Pack container (invalid vector table or header): {:?}",
+                e
+            );
             process::exit(1);
         }
 
@@ -1548,10 +1561,31 @@ fn main() {
             println!("Initial MSP:       0x{:08X}", meta.initial_sp);
             println!("Reset_Handler:     0x{:08X}", meta.reset_handler);
 
-            let eeprom_flash_addr = match meta.target {
-                MotorTarget::Dm01 => Some(0x0800_EE70u32),
-                MotorTarget::Dm02 => Some(0x0800_F142u32),
-                MotorTarget::Unknown(_) => None,
+            // Locate the factory EEPROM configuration block dynamically by searching for
+            // the Block 1 magic signature ([0xA5, 0x01, 0xFE] at offset 0x05A) and verifying the 5-block CRC.
+            let mut detected_eeprom_offset = None;
+            for i in 0..payload.len().saturating_sub(EEPROM_TOTAL_LEN) {
+                if payload[i + 0x5A..i + 0x5D] == [0xA5, 0x01, 0xFE] {
+                    if let Ok(slice) =
+                        <&[u8; EEPROM_TOTAL_LEN]>::try_from(&payload[i..i + EEPROM_TOTAL_LEN])
+                    {
+                        let cand = EepromImage { raw: *slice };
+                        if cand.verify_all_blocks().is_ok() {
+                            detected_eeprom_offset = Some(i);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let eeprom_flash_addr = if let Some(off) = detected_eeprom_offset {
+                Some(APP_FLASH_BASE_ADDR + off as u32)
+            } else {
+                match meta.target {
+                    MotorTarget::Dm01 => Some(0x0800_EE70u32),
+                    MotorTarget::Dm02 => Some(0x0800_F142u32),
+                    MotorTarget::Unknown(_) => None,
+                }
             };
 
             if let Some(addr) = eeprom_flash_addr {
@@ -1560,13 +1594,35 @@ fn main() {
                     let slice: &[u8; EEPROM_TOTAL_LEN] =
                         payload[off..off + EEPROM_TOTAL_LEN].try_into().unwrap();
                     let eeprom = EepromImage { raw: *slice };
-                    let model_str = String::from_utf8_lossy(eeprom.model_name_bytes());
+                    let raw_model = eeprom.model_name_bytes();
+                    let model_str = if raw_model.iter().all(|&c| (0x20..=0x7E).contains(&c)) {
+                        String::from_utf8_lossy(raw_model).to_string()
+                    } else {
+                        // Handle packed hex codes like TS\x11000W (TS 1700W)
+                        let mut s = String::new();
+                        for &b in raw_model {
+                            if (0x20..=0x7E).contains(&b) {
+                                s.push(b as char);
+                            } else {
+                                s.push_str(&format!(" 0x{:02X} ", b));
+                            }
+                        }
+                        s
+                    };
+                    let oem_model = String::from_utf8_lossy(eeprom.oem_model_bytes());
+                    let serial_num = String::from_utf8_lossy(eeprom.serial_number_bytes());
                     println!(
                         "Factory EEPROM:    0x{:08X} (Model: '{}', 5-Block CRC Check: {:?})",
                         addr,
                         model_str,
                         eeprom.verify_all_blocks()
                     );
+                    if !oem_model.is_empty() || !serial_num.is_empty() {
+                        println!(
+                            "OEM Profile:       '{}' (Serial: '{}')",
+                            oem_model, serial_num
+                        );
+                    }
                     println!("Default Pwr[1..5]:     {:?}%", eeprom.assist_pwr_table());
                     println!(
                         "Default EAssist[1..5]: {:?}%",

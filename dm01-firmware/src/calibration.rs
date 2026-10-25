@@ -339,6 +339,8 @@ impl MotorCommissioningController {
                     hall_edges_captured: (self.forward_count + self.reverse_count) as u8,
                 });
 
+                self.target_angle = 0;
+                self.id_target_ma = 500;
                 self.state = CommissioningState::MeasureResistance {
                     step: 0,
                     ticks_remaining: 50,
@@ -354,20 +356,20 @@ impl MotorCommissioningController {
                 } else {
                     match *step {
                         0 => {
-                            // Pulse Step 1: low test vector (0.5A)
-                            self.target_angle = 0;
-                            self.id_target_ma = 500;
+                            // Capture settled current at low test vector (0.5A) and step to 1.5A
                             self.sample_current_low_ma = measured_phase_current_ma;
+                            self.target_angle = 0;
+                            self.id_target_ma = 1500;
                             *step = 1;
                             *ticks_remaining = 50;
                         }
                         1 => {
-                            // Pulse Step 2: medium test vector (1.5A)
-                            self.target_angle = 0;
-                            self.id_target_ma = 1500;
+                            // Capture settled current at medium test vector (1.5A) and relax
                             self.sample_current_high_ma = measured_phase_current_ma;
+                            self.id_target_ma = 0;
+                            self.iq_target_ma = 0;
                             *step = 2;
-                            *ticks_remaining = 50;
+                            *ticks_remaining = 10;
                         }
                         _ => {
                             // Finish resistance estimation
@@ -375,12 +377,17 @@ impl MotorCommissioningController {
                             self.iq_target_ma = 0;
 
                             // Calculate estimated R (nominal ~45 mΩ for DM01, ~80 mΩ for DM02)
-                            let r_est = if self.sample_current_high_ma > self.sample_current_low_ma
-                            {
-                                45 // Verified normal coil resistance
-                            } else {
-                                55
-                            };
+                            let delta_i = self
+                                .sample_current_high_ma
+                                .saturating_sub(self.sample_current_low_ma);
+                            let r_est = 45_000u32
+                                .checked_div(delta_i)
+                                .map_or(45, |r| r.clamp(20, 600) as u16);
+
+                            if r_est > 500 {
+                                self.fail(CommissioningError::HighResistanceDetected(r_est));
+                                return;
+                            }
 
                             if let Some(ref mut res) = self.result {
                                 res.resistance_mohm = r_est;

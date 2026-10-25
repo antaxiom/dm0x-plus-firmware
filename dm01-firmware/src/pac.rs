@@ -61,6 +61,8 @@ pub const SCB_CPACR_ADDR: usize = 0xE000_ED88;
 pub const SYST_CSR_ADDR: usize = 0xE000_E010;
 pub const SYST_RVR_ADDR: usize = 0xE000_E014;
 pub const SYST_CVR_ADDR: usize = 0xE000_E018;
+pub const NVIC_ICER_BASE: usize = 0xE000_E180;
+pub const NVIC_ICPR_BASE: usize = 0xE000_E280;
 
 /// STM32/GD32 Reset and Clock Control (`RCC`) register layout.
 #[repr(C)]
@@ -124,6 +126,13 @@ pub struct Tim1Registers {
     pub bdtr: VolatileReg<u32>,  // +0x44
     pub dcr: VolatileReg<u32>,   // +0x48
     pub dmar: VolatileReg<u32>,  // +0x4C
+}
+
+/// STM32/GD32 Alternate Function I/O (`AFIO`) register layout (`0x4001_0000`).
+#[repr(C)]
+pub struct AfioRegisters {
+    pub evcr: VolatileReg<u32>, // +0x00: Event control register
+    pub mapr: VolatileReg<u32>, // +0x04: AF remap and debug I/O configuration register (SWJ_CFG, PD01_REMAP)
 }
 
 /// STM32/GD32 GPIO register layout.
@@ -237,6 +246,11 @@ impl HardwarePeripherals {
     }
 
     #[inline(always)]
+    pub fn afio() -> &'static AfioRegisters {
+        unsafe { &*(AFIO_BASE as *const AfioRegisters) }
+    }
+
+    #[inline(always)]
     pub fn adc1() -> &'static AdcRegisters {
         unsafe { &*(ADC1_BASE as *const AdcRegisters) }
     }
@@ -296,6 +310,23 @@ impl HardwarePeripherals {
     pub fn set_vtor(vtor_addr: u32) {
         unsafe {
             write_volatile(SCB_VTOR_ADDR as *mut u32, vtor_addr);
+        }
+    }
+
+    /// Disables and clears all external NVIC peripheral interrupts (`IRQ 0..255`) so that any
+    /// peripheral interrupt left enabled by the factory bootloader cannot vector past the
+    /// 16-entry core exception table.
+    #[inline(always)]
+    pub fn disable_all_nvic_irqs() {
+        unsafe {
+            let icer = NVIC_ICER_BASE as *mut u32;
+            let icpr = NVIC_ICPR_BASE as *mut u32;
+            let mut i = 0;
+            while i < 8 {
+                write_volatile(icer.add(i), 0xFFFF_FFFF);
+                write_volatile(icpr.add(i), 0xFFFF_FFFF);
+                i += 1;
+            }
         }
     }
 

@@ -499,6 +499,347 @@ impl LiveParamUpdateFrame {
     }
 }
 
+/// Non-blocking streaming state machine for 16-byte [`LiveParamUpdateFrame`] packets (`0x7E .. 0x95 .. 0x7F`).
+#[derive(Debug, Clone)]
+pub struct LiveParamDecoder {
+    buf: [u8; 16],
+    len: usize,
+}
+
+impl Default for LiveParamDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LiveParamDecoder {
+    pub const fn new() -> Self {
+        Self {
+            buf: [0u8; 16],
+            len: 0,
+        }
+    }
+
+    /// Feeds one raw byte into the decoder and returns `Some(LiveParamUpdateFrame)` when a valid frame completes.
+    pub fn push_byte(&mut self, b: u8) -> Option<LiveParamUpdateFrame> {
+        if self.len == 0 {
+            if b == 0x7E {
+                self.buf[0] = b;
+                self.len = 1;
+            }
+            return None;
+        }
+        self.buf[self.len] = b;
+        self.len += 1;
+        if self.len == 2 && b != 0x10 {
+            self.len = if b == 0x7E { 1 } else { 0 };
+            return None;
+        }
+        if self.len == 3 && b != 0x3C {
+            self.len = if b == 0x7E { 1 } else { 0 };
+            return None;
+        }
+        if self.len == 4 && b != 0xC3 {
+            self.len = if b == 0x7E { 1 } else { 0 };
+            return None;
+        }
+        if self.len == 16 {
+            self.len = 0;
+            LiveParamUpdateFrame::decode(&self.buf)
+        } else {
+            None
+        }
+    }
+}
+
+/// 2-byte sequence detector for the ToSeven IAP bootloader wakeup command (`[0xC9, 0x77]`).
+///
+/// Prevents a single noisy byte (`0xC9`) on the UART line from triggering an unintended MCU reset.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IapWakeupDetector {
+    prev_plain: u8,
+    prev_wire: u8,
+}
+
+impl IapWakeupDetector {
+    pub const fn new() -> Self {
+        Self {
+            prev_plain: 0,
+            prev_wire: 0,
+        }
+    }
+
+    /// Feeds both the raw wire byte and `0x69`-descrambled byte, returning `true` only when
+    /// the consecutive 2-byte `[0xC9, 0x77]` wakeup prefix is observed.
+    pub fn push_byte(&mut self, wire_b: u8, plain_b: u8) -> bool {
+        let matched = (self.prev_plain == 0xC9 && plain_b == 0x77)
+            || (self.prev_wire == 0xC9 && wire_b == 0x77);
+        self.prev_plain = plain_b;
+        self.prev_wire = wire_b;
+        matched
+    }
+}
+
+// ============================================================================
+// Decompiled Native `V6510C` 7-Bit UART Display Protocol (`0xC0 | cmd` .. `0x80 | crc_lo`)
+// ============================================================================
+//
+// In all 17 historical ToSeven motor firmwares (`V6206C` through `V6510C`), the native
+// USART3 display link uses a 7-bit framing scheme (`0x0800BFD0` RX, `0x0800E21C` TX)
+// layered beneath the byte-wise `0x69` XOR stream cipher:
+// - Start-of-Frame (SOF): `0xC0 | (cmd & 0x3F)` (top 2 bits `0b11`).
+// - Data Payload: `0..N` 7-bit bytes (`b & 0x80 == 0`), where 14-bit integers are packed
+//   big-endian as `[((val >> 7) & 0x7F) as u8, (val & 0x7F) as u8]`.
+// - 3-Byte Packed CRC-16 + End-of-Frame (EOF) (`0x08002AA8` / `0x08002458`):
+//   - `crc = crc16_toseven(&buf[0..1 + N])`
+//   - `crc_b0 = ((crc >> 9) & 0x7F) as u8`
+//   - `crc_b1 = ((crc >> 2) & 0x7F) as u8`
+//   - `crc_b2 = 0x80 | ((crc & 0x03) as u8)` (top 2 bits `0b10` mark EOF!).
+
+/// Packs a 16-bit ToSeven CRC (`crc16_toseven`) into the 3-byte `V6510C` 7-bit trailer
+/// with the `0x80` End-of-Frame marker in the final byte (matching `0x08002AA8` / `0x0800E21C`).
+#[inline]
+pub const fn encode_v6510c_crc(crc: u16) -> [u8; 3] {
+    [
+        ((crc >> 9) & 0x7F) as u8,
+        ((crc >> 2) & 0x7F) as u8,
+        0x80 | ((crc & 0x03) as u8),
+    ]
+}
+
+/// Unpacks a 3-byte `V6510C` 7-bit trailer back into the 16-bit ToSeven CRC (matching `0x08002458`).
+#[inline]
+pub const fn decode_v6510c_crc(b0: u8, b1: u8, b2: u8) -> u16 {
+    (((b0 & 0x7F) as u16) << 9) | (((b1 & 0x7F) as u16) << 2) | ((b2 & 0x7F) as u16)
+}
+
+/// Encodes an unsigned 14-bit integer (`0..=16383`) into two 7-bit big-endian data bytes.
+#[inline]
+pub const fn encode_v6510c_u14(val: u16) -> [u8; 2] {
+    [((val >> 7) & 0x7F) as u8, (val & 0x7F) as u8]
+}
+
+/// Decodes two 7-bit big-endian data bytes into an unsigned 14-bit integer (`0..=16383`).
+#[inline]
+pub const fn decode_v6510c_u14(hi: u8, lo: u8) -> u16 {
+    (((hi & 0x7F) as u16) << 7) | ((lo & 0x7F) as u16)
+}
+
+/// Builds a complete plaintext `V6510C` 7-bit frame (`0xC0 | cmd`, `data_7bit`, 3-byte packed CRC+EOF)
+/// into `out` (matching `0x0800E21C`). Returns the total frame length (`4 + data_7bit.len()`).
+pub fn encode_v6510c_frame(cmd: u8, data_7bit: &[u8], out: &mut [u8]) -> usize {
+    let total_len = 4 + data_7bit.len();
+    if out.len() < total_len {
+        return 0;
+    }
+    out[0] = 0xC0 | (cmd & 0x3F);
+    let mut i = 0;
+    while i < data_7bit.len() {
+        out[1 + i] = data_7bit[i] & 0x7F;
+        i += 1;
+    }
+    let payload_end = 1 + data_7bit.len();
+    let crc = crc16_toseven(&out[0..payload_end]);
+    let crc_bytes = encode_v6510c_crc(crc);
+    out[payload_end] = crc_bytes[0];
+    out[payload_end + 1] = crc_bytes[1];
+    out[payload_end + 2] = crc_bytes[2];
+    total_len
+}
+
+/// Validates a complete plaintext `V6510C` 7-bit frame (`0x0800241C` & `0x08002458`),
+/// returning `Some((cmd, data_7bit_slice))` if framing and CRC-16 match.
+pub fn verify_v6510c_frame(frame: &[u8]) -> Option<(u8, &[u8])> {
+    if frame.len() < 4 {
+        return None;
+    }
+    if (frame[0] & 0xC0) != 0xC0 {
+        return None;
+    }
+    let last = frame[frame.len() - 1];
+    // EOF marker has top 2 bits == 0b10 (0x80..=0x83 for 2-bit CRC remainder)
+    if (last & 0xC0) != 0x80 {
+        return None;
+    }
+    let mut i = 1;
+    while i < frame.len() - 1 {
+        if (frame[i] & 0x80) != 0 {
+            return None;
+        }
+        i += 1;
+    }
+    let payload_end = frame.len() - 3;
+    let expected_crc = crc16_toseven(&frame[0..payload_end]);
+    let actual_crc = decode_v6510c_crc(frame[payload_end], frame[payload_end + 1], last);
+    if expected_crc != actual_crc {
+        return None;
+    }
+    Some((frame[0] & 0x3F, &frame[1..payload_end]))
+}
+
+/// Zero-allocation streaming state machine that decodes native `V6510C` 7-bit display-to-controller
+/// packets (`0xDE` = `cmd 0x1E` periodic status, `0xF1` = `cmd 0x31` riding mode, `0xC3 0x1D` = live config)
+/// into [`DisplayCommandFrame`], matching `0x0800BFD0` and `0x0800473C`.
+#[derive(Debug, Clone)]
+pub struct V6510cDisplayCommandDecoder {
+    buf: [u8; 24],
+    len: usize,
+    pub headlight_on: bool,
+    pub walk_assist_active: bool,
+    pub mode: RidingMode,
+    pub assist_level: u8,
+}
+
+impl Default for V6510cDisplayCommandDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl V6510cDisplayCommandDecoder {
+    pub const fn new() -> Self {
+        Self {
+            buf: [0u8; 24],
+            len: 0,
+            headlight_on: false,
+            walk_assist_active: false,
+            mode: RidingMode::Eco,
+            assist_level: 1,
+        }
+    }
+
+    /// Feeds one `0x69`-decrypted byte from `USART3` RX.
+    /// Returns `Some(DisplayCommandFrame)` when a valid `V6510C` display command frame completes.
+    pub fn push_byte(&mut self, plain_b: u8) -> Option<DisplayCommandFrame> {
+        // Start of frame: top 2 bits == 0b11 (0xC0..=0xFF)
+        if (plain_b & 0xC0) == 0xC0 {
+            self.buf[0] = plain_b;
+            self.len = 1;
+            return None;
+        }
+
+        if self.len == 0 {
+            return None;
+        }
+
+        if self.len >= self.buf.len() {
+            self.len = 0;
+            return None;
+        }
+
+        self.buf[self.len] = plain_b;
+        self.len += 1;
+
+        // End of frame: top 2 bits == 0b10 (0x80..=0xBF)
+        if (plain_b & 0xC0) == 0x80 {
+            let frame_len = self.len;
+            self.len = 0;
+            let (cmd, data) = verify_v6510c_frame(&self.buf[..frame_len])?;
+            match cmd {
+                // cmd 0x1E (0xDE, @0x0800490E): Periodic display status frame
+                // data[0]: bit 5 (0x20) = headlight, bit 6 (0x40) = walk assist, bits 0..3 = assist level (0..5)
+                0x1E if !data.is_empty() => {
+                    let d0 = data[0];
+                    self.headlight_on = (d0 & 0x20) != 0;
+                    self.walk_assist_active = (d0 & 0x40) != 0;
+                    self.assist_level = (d0 & 0x0F).min(5);
+                    if data.len() >= 2 && (data[1] & 0x40) != 0 {
+                        self.mode = match self.mode {
+                            RidingMode::Eco => RidingMode::City,
+                            RidingMode::City => RidingMode::Sport,
+                            RidingMode::Sport => RidingMode::Eco,
+                        };
+                    }
+                    Some(DisplayCommandFrame {
+                        headlight_on: self.headlight_on,
+                        walk_assist_active: self.walk_assist_active,
+                        mode: self.mode,
+                        assist_level: self.assist_level,
+                    })
+                }
+                // cmd 0x31 (0xF1, @0x08004D38): Explicit Riding Mode selection
+                // data[0] == 0x01, data[1] & 0x0F: 0|1 => Eco, 2 => City, 3 => Sport
+                0x31 if data.len() >= 2 && data[0] == 0x01 => {
+                    self.mode = match data[1] & 0x0F {
+                        0 | 1 => RidingMode::Eco,
+                        2 => RidingMode::City,
+                        _ => RidingMode::Sport,
+                    };
+                    Some(DisplayCommandFrame {
+                        headlight_on: self.headlight_on,
+                        walk_assist_active: self.walk_assist_active,
+                        mode: self.mode,
+                        assist_level: self.assist_level,
+                    })
+                }
+                // cmd 0x03 (0xC3, @0x08004A3C) subcmd 0x1D: Live mode & assist sync
+                0x03 if data.len() >= 3 && data[0] == 0x1D => {
+                    self.mode = RidingMode::from_wire_u8(data[1] & 0x0F);
+                    self.assist_level = (data[2] & 0x0F).min(5);
+                    Some(DisplayCommandFrame {
+                        headlight_on: self.headlight_on,
+                        walk_assist_active: self.walk_assist_active,
+                        mode: self.mode,
+                        assist_level: self.assist_level,
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl TelemetryFrame {
+    /// Encodes `cmd 0x30` (`0xF0`, `@0x0800626C`): Controller status flags & Hall state (5 bytes).
+    pub fn encode_v6510c_status_f0(
+        &self,
+        hall_bits: u8,
+        brake_active: bool,
+        out: &mut [u8; 5],
+    ) -> usize {
+        let status = (if brake_active { 0x40 } else { 0x00 }) | (hall_bits & 0x07);
+        encode_v6510c_frame(0x30, &[status], out)
+    }
+
+    /// Encodes `cmd 0x27` (`0xE7`, `@0x080062B4`): Controller temperature with `+15°C` offset (5 bytes).
+    pub fn encode_v6510c_temp_e7(&self, out: &mut [u8; 5]) -> usize {
+        let biased = (self.controller_temp_c.clamp(-15, 112) as i16 + 15) as u8 & 0x7F;
+        encode_v6510c_frame(0x27, &[biased], out)
+    }
+
+    /// Encodes `cmd 0x26` (`0xE6`, `@0x08006304`): Battery State-of-Charge `0..100%` (5 bytes).
+    pub fn encode_v6510c_soc_e6(&self, out: &mut [u8; 5]) -> usize {
+        let soc = self.battery_soc_percent.min(100) & 0x7F;
+        encode_v6510c_frame(0x26, &[soc], out)
+    }
+
+    /// Encodes `cmd 0x2E` (`0xEE`, `@0x08006354`): Torque sensor voltage in mV as 14-bit integer (6 bytes).
+    pub fn encode_v6510c_torque_ee(&self, out: &mut [u8; 6]) -> usize {
+        let data = encode_v6510c_u14(self.torque_sensor_mv.min(16383));
+        encode_v6510c_frame(0x2E, &data, out)
+    }
+
+    /// Encodes `cmd 0x2F` (`0xEF`, `@0x080063A8`): Phase/Bus current in `0.1 A` units (7 bytes).
+    pub fn encode_v6510c_current_ef(&self, out: &mut [u8; 7]) -> usize {
+        let cur = encode_v6510c_u14(self.phase_current_deci_a.min(16383));
+        encode_v6510c_frame(0x2F, &[cur[0], cur[1], 0x00], out)
+    }
+
+    /// Encodes `cmd 0x2B` (`0xEB`, `@0x0800640C`): Crank cadence in RPM as 14-bit integer (6 bytes).
+    pub fn encode_v6510c_cadence_eb(&self, out: &mut [u8; 6]) -> usize {
+        let data = encode_v6510c_u14(self.cadence_rpm.min(16383));
+        encode_v6510c_frame(0x2B, &data, out)
+    }
+
+    /// Encodes `cmd 0x32` (`0xF2`, `@0x08006680`): Active ToSeven display error/fault code (5 bytes).
+    pub fn encode_v6510c_fault_f2(&self, out: &mut [u8; 5]) -> usize {
+        let code = self.faults.to_v6510c_display_code() & 0x7F;
+        encode_v6510c_frame(0x32, &[code], out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,5 +1031,91 @@ mod tests {
         // Corrupt 1 byte in CRC
         buf[13] ^= 0x55;
         assert!(LiveParamUpdateFrame::decode(&buf).is_none());
+    }
+
+    #[test]
+    fn test_v6510c_7bit_protocol_crc_and_commands() {
+        // 1. Test 16-bit CRC 3-byte 7-bit packing round-trip across edge values
+        for &crc in &[0x0000u16, 0x0003, 0x1651, 0x459D, 0xABCD, 0xFFFF] {
+            let packed = encode_v6510c_crc(crc);
+            assert_eq!(packed[0] & 0x80, 0x00);
+            assert_eq!(packed[1] & 0x80, 0x00);
+            assert_eq!(packed[2] & 0xC0, 0x80); // EOF marker
+            assert_eq!(decode_v6510c_crc(packed[0], packed[1], packed[2]), crc);
+        }
+
+        // 2. Test V6510cDisplayCommandDecoder for cmd 0x1E (0xDE) and cmd 0x31 (0xF1)
+        let mut dec = V6510cDisplayCommandDecoder::new();
+
+        // Build cmd 0x1E (0xDE): headlight=1 (0x20), walk=1 (0x40), assist=4 -> d0 = 0x64
+        let mut frame_1e = [0u8; 5];
+        assert_eq!(encode_v6510c_frame(0x1E, &[0x64], &mut frame_1e), 5);
+        assert_eq!(frame_1e[0], 0xDE);
+
+        let mut parsed = None;
+        for &b in &frame_1e {
+            if let Some(cmd) = dec.push_byte(b) {
+                parsed = Some(cmd);
+            }
+        }
+        assert_eq!(
+            parsed,
+            Some(DisplayCommandFrame {
+                headlight_on: true,
+                walk_assist_active: true,
+                mode: RidingMode::Eco,
+                assist_level: 4,
+            })
+        );
+
+        // Build cmd 0x31 (0xF1): data=[0x01, 0x03] -> RidingMode::Sport
+        let mut frame_31 = [0u8; 6];
+        assert_eq!(encode_v6510c_frame(0x31, &[0x01, 0x03], &mut frame_31), 6);
+        assert_eq!(frame_31[0], 0xF1);
+        parsed = None;
+        for &b in &frame_31 {
+            if let Some(cmd) = dec.push_byte(b) {
+                parsed = Some(cmd);
+            }
+        }
+        assert_eq!(
+            parsed,
+            Some(DisplayCommandFrame {
+                headlight_on: true,
+                walk_assist_active: true,
+                mode: RidingMode::Sport,
+                assist_level: 4,
+            })
+        );
+
+        // 3. Test controller-to-display telemetry frame builders
+        let telem = TelemetryFrame {
+            battery_voltage_deci_v: 520,
+            battery_soc_percent: 84,
+            phase_current_deci_a: 155,
+            wheel_speed_deci_kph: 265,
+            cadence_rpm: 78,
+            torque_sensor_mv: 1320,
+            throttle_mv: 850,
+            controller_temp_c: 42,
+            faults: FaultFlags(FaultFlags::CONTROLLER_MOSFET_FAIL),
+        };
+        let mut f0 = [0u8; 5];
+        telem.encode_v6510c_status_f0(0b101, true, &mut f0);
+        assert_eq!(verify_v6510c_frame(&f0), Some((0x30, &[0x45][..])));
+
+        let mut e7 = [0u8; 5];
+        telem.encode_v6510c_temp_e7(&mut e7);
+        assert_eq!(verify_v6510c_frame(&e7), Some((0x27, &[57][..]))); // 42 + 15 = 57
+
+        let mut ee = [0u8; 6];
+        telem.encode_v6510c_torque_ee(&mut ee);
+        let (cmd_ee, data_ee) = verify_v6510c_frame(&ee).unwrap();
+        assert_eq!(cmd_ee, 0x2E);
+        assert_eq!(decode_v6510c_u14(data_ee[0], data_ee[1]), 1320);
+
+        let mut f2 = [0u8; 5];
+        telem.encode_v6510c_fault_f2(&mut f2);
+        assert_eq!(verify_v6510c_frame(&f2), Some((0x32, &[0x21][..])));
     }
 }

@@ -96,14 +96,32 @@ impl Dm01PwmHardware {
         // 4. CR2: MMS = 0b010 (Master Mode: Update event TRGO triggers ADC injected conversions at PWM midpoint)
         tim1.cr2.write(0x0020);
 
-        // 5. DIER: UIE = 1 (Enable Update Interrupt for 16 kHz FOC cycle)
-        tim1.dier.write(0x0001);
+        // 5. DIER: Keep NVIC interrupts disabled (0x0000); 16 kHz FOC loop is driven directly by
+        //    TIM1 TRGO -> ADC1 Injected End-of-Conversion (JEOC) hardware flag polling.
+        tim1.dier.write(0x0000);
 
         // 6. Latch shadow registers via Update Generation (UG = 1) before starting counter
         tim1.egr.write(0x0001);
+        // Clear any pending status flags (including BIF break flag bit 7)
+        tim1.sr.write(0x0000);
 
         // 7. CR1: Center-aligned mode 1 (CMS = 0b01), Auto-reload preload enable (ARPE = 1), Counter Enable (CEN = 1)
         tim1.cr1.write(0x0020 | 0x0080 | 0x0001);
+    }
+
+    /// Returns `true` if the hardware overcurrent / break comparator (`TIM1_BKIN` on `PB12`)
+    /// has tripped and latched the Break Interrupt Flag (`BIF`, bit 7 in `TIM1->SR`).
+    #[inline(always)]
+    pub fn has_break_trip(&self) -> bool {
+        let tim1 = HardwarePeripherals::tim1();
+        (tim1.sr.read() & (1 << 7)) != 0
+    }
+
+    /// Clears the latched `TIM1->SR` Break Interrupt Flag (`BIF`, bit 7).
+    #[inline(always)]
+    pub fn clear_break_trip(&mut self) {
+        let tim1 = HardwarePeripherals::tim1();
+        tim1.sr.write(!(1 << 7));
     }
 }
 
@@ -147,10 +165,25 @@ use crate::pac::ADC1_BASE;
 /// - `[4]`: ADC1 Channel 9 (PB1) — NTC thermistor temperature
 pub static mut DMA_ADC_CHANNELS: [u16; 5] = [0; 5];
 
-/// Concrete `MotorSensorsHal` reading DM01/DM02 physical Hall sensors, dual injected shunts, and DMA-scanned ADCs.
+/// Concrete `MotorSensorsHal` reading DM01/DM02 physical Hall sensors, dual injected shunts,
+/// DMA-scanned ADCs, and digital quadrature PAS / wheel-speed pulse timers.
 pub struct Dm01SensorsHardware {
     pub shunt_offset_u: u16,
     pub shunt_offset_v: u16,
+    /// Configured wheel circumference in mm (default 2075 mm for 26" wheel).
+    pub wheel_circumference_mm: u16,
+    /// Configured speed sensor magnets per wheel revolution (default 1).
+    pub speed_sensor_magnets: u8,
+    /// Configured PAS ring magnet count (default 12 magnets).
+    pub pas_magnet_count: u8,
+    // Internal 1 kHz digital edge-tracking state
+    last_speed_pin_high: bool,
+    ticks_since_speed_edge_ms: u16,
+    measured_speed_deci_kph: u16,
+    last_pas1_high: bool,
+    ticks_since_pas_edge_ms: u16,
+    measured_cadence_rpm: u16,
+    detected_backpedaling: bool,
 }
 
 impl Dm01SensorsHardware {
@@ -158,7 +191,24 @@ impl Dm01SensorsHardware {
         Self {
             shunt_offset_u: 2048, // 1.65V mid-point on 12-bit ADC (4096 counts)
             shunt_offset_v: 2048,
+            wheel_circumference_mm: 2075,
+            speed_sensor_magnets: 1,
+            pas_magnet_count: 12,
+            last_speed_pin_high: true,
+            ticks_since_speed_edge_ms: 5000,
+            measured_speed_deci_kph: 0,
+            last_pas1_high: true,
+            ticks_since_pas_edge_ms: 5000,
+            measured_cadence_rpm: 0,
+            detected_backpedaling: false,
         }
+    }
+
+    /// Synchronizes wheel circumference, magnet counts, and PAS pole counts from [`MotorConfig`].
+    pub fn configure_from_motor_config(&mut self, cfg: &MotorConfig) {
+        self.wheel_circumference_mm = cfg.wheel_circumference_mm.max(1000);
+        self.speed_sensor_magnets = cfg.rim_speed_sensor_magnets.max(1);
+        self.pas_magnet_count = cfg.pas_magnic_count.max(3);
     }
 
     /// Initializes all physical system clocks, GPIO pins, DMA1 Channel 1, and ADC1/ADC2.
@@ -181,20 +231,29 @@ impl Dm01SensorsHardware {
         // APB1ENR: TIM4 (bit 2), USART3 (bit 18)
         rcc.apb1enr.modify(|v| v | (1 << 2) | (1 << 18));
 
-        // 2. Configure GPIO pins
+        // 2. Configure AFIO pin remapping (matching V6510C GPIO_Init_All at 0x0800BA02):
+        // - SWJ_CFG = 0b010 (JTAG-DP disabled, SW-DP enabled on PA13/PA14, freeing PA15 for PAS Ch B)
+        // - PD01_REMAP = bit 15 (enables PD0/PD1 as GPIO for PAS Ch A)
+        let afio = HardwarePeripherals::afio();
+        afio.mapr
+            .modify(|v| (v & !(0b111 << 24)) | (0b010 << 24) | (1 << 15));
+
+        // 3. Configure GPIO pins (matching V6510C at 0x0800B8DC):
         // GPIOA:
-        // PA1 (Bus Current), PA4 (Torque), PA5 (Phase B), PA6 (Phase A), PA7 (Throttle): Analog input (0x0)
+        // PA0, PA1 (Temp NTC), PA4 (Torque), PA5 (Phase B), PA6 (Phase A), PA7 (Vbat/Throttle): Analog input (0x0)
+        // PA2 (Status/Fault LED): Push-Pull Output 10MHz (0x1)
+        // PA3 (External Wheel Speed Sensor, TIM5 0x08005A74): Input with Pull-Up (0x8)
         // PA8, PA9, PA10: TIM1_CH1, CH2, CH3 AF Push-Pull 50MHz (0xB)
-        // PA15: Speed Sensor Input with Pull-Up (0x8)
+        // PA15 (Quadrature PAS Channel B, TIM2 0x0800574C): Input with Pull-Up (0x8)
         let gpioa = HardwarePeripherals::gpioa();
-        gpioa.crl.write(0x0000_4044); // PA1, PA4, PA5, PA6, PA7 analog (0x0)
+        gpioa.crl.write(0x0000_8100); // PA0,1,4..7 analog (0x0), PA2 PP-Out (0x1), PA3 Input-PU (0x8)
         gpioa.crh.write(0x8444_4BBB); // PA8..10 AF-PP (0xB), PA15 Input-PU (0x8)
-        gpioa.odr.modify(|v| v | (1 << 15)); // PA15 pull-up
+        gpioa.odr.modify(|v| v | (1 << 3) | (1 << 15)); // Pull-ups on PA3 and PA15
 
         // GPIOB:
-        // PB0 (Vbat), PB1 (Temp): Analog input (0x0)
-        // PB2 (Brake Switch): Input with Pull-Up (0x8)
-        // PB6, PB7, PB8 (Hall A, B, C): Input with Pull-Up (0x8)
+        // PB0 (Throttle), PB1 (Aux/5V): Analog input (0x0)
+        // PB2 (Brake Switch, TIM5 0x0800210C): Input with Pull-Up (0x8)
+        // PB6, PB7, PB8 (Hall A, B, C, TIM4 0x08007E80): Input with Pull-Up (0x8)
         // PB10 (USART3_TX): AF-PP 50MHz (0xB)
         // PB11 (USART3_RX): Input with Pull-Up (0x8)
         // PB12 (TIM1_BKIN Break Input): Input with Pull-Up (0x8)
@@ -207,16 +266,20 @@ impl Dm01SensorsHardware {
             .modify(|v| v | (1 << 2) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 11) | (1 << 12));
 
         // GPIOC:
-        // PC13 (PAS1 Cadence Quadrature): Input with Pull-Up (0x8)
+        // PC13 (Secondary PAS Input): Input with Pull-Up (0x8)
+        // PC15 (Headlight / Walk Output, 0x080061A4): Push-Pull Output 10MHz (0x1)
         let gpioc = HardwarePeripherals::gpioc();
-        gpioc.crh.modify(|v| (v & !(0xF << 20)) | (0x8 << 20));
-        gpioc.odr.modify(|v| v | (1 << 13));
+        gpioc
+            .crh
+            .modify(|v| (v & !((0xF << 20) | (0xF << 28))) | (0x8 << 20) | (0x1 << 28));
+        gpioc.odr.modify(|v| (v | (1 << 13)) & !(1 << 15));
 
         // GPIOD:
-        // PD0 (PAS2 Cadence Quadrature): Input with Pull-Up (0x8)
+        // PD0 (Primary Quadrature PAS Channel A, TIM2 0x0800574C): Input with Pull-Up (0x8)
+        // PD1 (Auxiliary Output, 0x0800B8DC): Push-Pull Output 10MHz (0x1)
         let gpiod = HardwarePeripherals::gpiod();
-        gpiod.crl.modify(|v| (v & !0xF) | 0x8);
-        gpiod.odr.modify(|v| v | 1);
+        gpiod.crl.modify(|v| (v & !0xFF) | 0x18);
+        gpiod.odr.modify(|v| (v | 1) & !(1 << 1));
 
         // 3. Configure DMA1 Channel 1 for ADC1 Regular Scan
         let dma1 = HardwarePeripherals::dma1();
@@ -330,6 +393,23 @@ impl Dm01SensorsHardware {
             adc2.jofr1.write(mean_v as u32);
         }
     }
+
+    /// Drives the headlight/walk output on `PC15` (`0x080061A4`) and the controller status/fault LED on `PA2` (`0x08002094`).
+    #[inline(always)]
+    pub fn set_outputs(&self, headlight_on: bool, fault_led_on: bool) {
+        let gpioc = HardwarePeripherals::gpioc();
+        if headlight_on {
+            gpioc.bsrr.write(1 << 15);
+        } else {
+            gpioc.brr.write(1 << 15);
+        }
+        let gpioa = HardwarePeripherals::gpioa();
+        if fault_led_on {
+            gpioa.bsrr.write(1 << 2);
+        } else {
+            gpioa.brr.write(1 << 2);
+        }
+    }
 }
 
 impl Default for Dm01SensorsHardware {
@@ -416,14 +496,66 @@ impl MotorSensorsHal for Dm01SensorsHardware {
         let idr_b = HardwarePeripherals::gpiob().idr.read();
         let brake_active = (idr_b & (1 << 2)) == 0 || (idr_b & (1 << 12)) == 0;
 
+        // External wheel speed sensor on PA3 (matching V6510C TIM5 ISR at 0x08005A74, 1 ms sample rate):
+        // speed (0.1 km/h) = (circumference_mm * 36) / (period_ms * magnets)
+        let idr_a = HardwarePeripherals::gpioa().idr.read();
+        let speed_pin_high = (idr_a & (1 << 3)) != 0;
+        if self.last_speed_pin_high && !speed_pin_high {
+            if self.ticks_since_speed_edge_ms >= 25 && self.ticks_since_speed_edge_ms < 2500 {
+                let num = (self.wheel_circumference_mm as u32) * 36;
+                let den =
+                    (self.ticks_since_speed_edge_ms as u32) * (self.speed_sensor_magnets as u32);
+                self.measured_speed_deci_kph = (num / den.max(1)).min(999) as u16;
+            }
+            self.ticks_since_speed_edge_ms = 0;
+        } else {
+            self.ticks_since_speed_edge_ms = self.ticks_since_speed_edge_ms.saturating_add(1);
+            if self.ticks_since_speed_edge_ms >= 2500 {
+                self.measured_speed_deci_kph = 0;
+            }
+        }
+        self.last_speed_pin_high = speed_pin_high;
+
+        // Dual-Hall quadrature PAS cadence sensor on PD0 (Channel A) and PA15 (Channel B)
+        // matching V6510C TIM2 ISR at 0x0800574C (with PC13 secondary fallback):
+        // On a falling edge of PD0 (PAS Ch A), PA15 == 1 indicates forward pedaling.
+        // cadence_rpm = 60_000 / (period_ms * pas_magnet_count)
+        let idr_c = HardwarePeripherals::gpioc().idr.read();
+        let idr_d = HardwarePeripherals::gpiod().idr.read();
+        let pas_ch_a_high = ((idr_d & 1) != 0) && ((idr_c & (1 << 13)) != 0);
+        let pas_ch_b_high = (idr_a & (1 << 15)) != 0;
+
+        if self.last_pas1_high && !pas_ch_a_high {
+            if self.ticks_since_pas_edge_ms >= 15 && self.ticks_since_pas_edge_ms < 1500 {
+                let den =
+                    (self.ticks_since_pas_edge_ms as u32) * (self.pas_magnet_count.max(1) as u32);
+                let rpm = (60_000u32 / den).min(200) as u16;
+                if pas_ch_b_high {
+                    self.detected_backpedaling = false;
+                    self.measured_cadence_rpm = rpm;
+                } else {
+                    self.detected_backpedaling = true;
+                    self.measured_cadence_rpm = 0;
+                }
+            }
+            self.ticks_since_pas_edge_ms = 0;
+        } else {
+            self.ticks_since_pas_edge_ms = self.ticks_since_pas_edge_ms.saturating_add(1);
+            if self.ticks_since_pas_edge_ms >= 1500 {
+                self.measured_cadence_rpm = 0;
+                self.detected_backpedaling = false;
+            }
+        }
+        self.last_pas1_high = pas_ch_a_high;
+
         SensorInputs {
             battery_voltage_mv,
             torque_adc_mv,
             throttle_adc_mv,
-            wheel_speed_deci_kph: 0,
-            cadence_rpm: 0,
+            wheel_speed_deci_kph: self.measured_speed_deci_kph,
+            cadence_rpm: self.measured_cadence_rpm,
             brake_active,
-            backpedaling: false,
+            backpedaling: self.detected_backpedaling,
             controller_temp_c,
             motor_temp_c: controller_temp_c,
             shift_sensor_triggered: false,

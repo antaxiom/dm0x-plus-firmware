@@ -10,7 +10,8 @@
 //!    - **Wakeup / Enter IAP:** A 21-byte packet sent at 9600 Baud with `0xC9, 0x77` sync bytes,
 //!      7-bit big-endian encoded payload size, checksum, payload XOR key, customer ID, and ToSeven CRC-16,
 //!      encrypted byte-wise with `XOR 0x69`.
-//!    - **Handshake / Probe:** Flasher sends byte `0x02` at 115200 Baud; bootloader replies `0x02, 0xFD`.
+//!    - **Handshake / Probe:** Flasher sends byte `0x02` at 38400 Baud (with 115200 Baud fallback);
+//!      bootloader replies `0x02, 0xFD`.
 //!    - **Header Handshake:** Flasher sends `0x06` (ACK), waits 10 ms, then transmits a 12-byte header frame:
 //!      `[0xFF, 0xFF, ProgramSize (4B LE), Checksum (4B LE), PayloadKey (1B), BaudIndex (1B)]`.
 //!      Bootloader validates and returns `0x06` ACK.

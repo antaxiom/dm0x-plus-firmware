@@ -12,12 +12,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          targets: thumbv7em-none-eabihf
 
       - name: Install Linux build & GUI dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libudev-dev \
             pkg-config \
             libfontconfig1-dev \
             libfreetype6-dev \
@@ -40,6 +40,9 @@ jobs:
 
       - name: Strict #![no_std] Bare-Metal Check
         run: cargo check --manifest-path dm01-firmware/Cargo.toml --no-default-features --lib
+
+      - name: Build Bare-Metal Cortex-M4F Firmware Targets (DM01 & DM02)
+        run: cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.toml --no-default-features --features embedded --bin dm01_firmware --bin dm02_firmware --release
 
       - name: Verify Stock Containers (if blobs present)
         run: |

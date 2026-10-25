@@ -15,10 +15,16 @@ import termios
 import select
 
 def find_port():
-    ports = glob.glob('/dev/cu.usbserial*') + glob.glob('/dev/cu.wch*') + glob.glob('/dev/cu.*FTDI*')
+    ports = (
+        glob.glob('/dev/cu.usbserial*')
+        + glob.glob('/dev/cu.wch*')
+        + glob.glob('/dev/cu.*FTDI*')
+        + glob.glob('/dev/ttyUSB*')
+        + glob.glob('/dev/ttyACM*')
+    )
     if not ports:
-        print("[!] No /dev/cu.usbserial* ports found.")
-        print("    Available ports:", glob.glob('/dev/cu.*'))
+        print("[!] No USB serial ports found (/dev/cu.usbserial*, /dev/ttyUSB*, /dev/ttyACM*).")
+        print("    Available ports:", glob.glob('/dev/cu.*') + glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*'))
         sys.exit(1)
     return ports[0]
 
@@ -37,10 +43,10 @@ def configure_port(fd, baud_const):
     termios.tcflush(fd, termios.TCIOFLUSH)
 
 def build_21b_wakeup():
-    # 21-byte wakeup frame encrypted with XOR 0x69 for DM01
-    # Plaintext: C9 77 00 00 00 6C 60 00 00 5D 29 61 08 09 5A 00 32 6E 69 39 83
+    # Verified 21-byte wakeup frame encrypted with XOR 0x69 for DM01 V6510C
+    # Plaintext: C9 77 00 00 00 6C 60 00 00 5D 29 61 08 09 5A 00 32 6E 69 78 65
     # XOR 0x69:
-    wire = bytes.fromhex("a01e69696905096969344008616033695b070050ea")
+    wire = bytes.fromhex("a01e69696905096969344008616033695b0700110c")
     return wire
 
 def run():

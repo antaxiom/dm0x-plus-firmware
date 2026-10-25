@@ -55,13 +55,6 @@ jobs:
         with:
           targets: ${{ matrix.target == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
 
-      # Linux dependencies for serialport (libudev)
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
-
       # Build Linux or Windows
       - name: Build CLI (Single Target)
         if: matrix.target != 'universal'

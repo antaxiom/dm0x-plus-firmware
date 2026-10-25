@@ -189,11 +189,12 @@ impl EepromImage {
         crate::pac::HardwarePeripherals::flash_write_halfwords(EEPROM_FLASH_BASE_ADDR, &halfwords)
     }
 
-    /// Verifies the Block 1 magic header (`A5 01 FE`) and the little-endian CRC-16
+    /// Verifies the Block 1 magic header (`0xA5` followed by `v` and `v ^ 0xFF`, e.g., `A5 01 FE`
+    /// in `V6212C..V6510C` or `A5 FD 02` in `V6206C` / `V6303C`) and the little-endian CRC-16
     /// at the end of each of the 5 blocks. Returns `Err(block_index)` if any block fails.
     pub fn verify_all_blocks(&self) -> Result<(), usize> {
         // Check Block 1 magic at offset 0x05A..0x05D
-        if self.raw[0x05A..0x05D] != EEPROM_BLOCK1_MAGIC {
+        if self.raw[0x05A] != EEPROM_XOR_KEY || (self.raw[0x05B] ^ self.raw[0x05C]) != 0xFF {
             return Err(1);
         }
         for block_idx in 0..5 {
@@ -207,6 +208,31 @@ impl EepromImage {
             }
         }
         Ok(())
+    }
+
+    /// Scans a decrypted `.Pack` application payload for the embedded 480-byte factory default
+    /// EEPROM table, validating the Block 1 magic (`A5 v ~v`) and all 5 block CRC-16 checksums.
+    /// Returns `Some((byte_offset, EepromImage))` when found.
+    pub fn find_in_payload(payload: &[u8]) -> Option<(usize, Self)> {
+        if payload.len() < EEPROM_TOTAL_LEN {
+            return None;
+        }
+        let max_start = payload.len() - EEPROM_TOTAL_LEN;
+        let mut off = 0;
+        while off <= max_start {
+            if payload[off + 0x05A] == EEPROM_XOR_KEY
+                && (payload[off + 0x05B] ^ payload[off + 0x05C]) == 0xFF
+            {
+                let mut raw = [0u8; EEPROM_TOTAL_LEN];
+                raw.copy_from_slice(&payload[off..off + EEPROM_TOTAL_LEN]);
+                let candidate = Self { raw };
+                if candidate.verify_all_blocks().is_ok() {
+                    return Some((off, candidate));
+                }
+            }
+            off += 1;
+        }
+        None
     }
 
     /// Recomputes and updates the Block 1 magic (`A5 01 FE`) and the CRC-16 at the end of all 5 blocks.
@@ -228,6 +254,27 @@ impl EepromImage {
         let slice = &self.raw[0x020..0x028];
         let mut len = 0;
         while len < slice.len() && slice[len] != 0 {
+            len += 1;
+        }
+        &slice[..len]
+    }
+
+    /// Returns the internal factory template string stored in Block 2 (`0x07D..0x09E`,
+    /// e.g. `"Sitgo-Rear 1700W"` / `"Sitgo-Rear 1500W"` vendor template artifacts).
+    pub fn oem_model_bytes(&self) -> &[u8] {
+        let slice = &self.raw[0x07D..0x09E];
+        let mut len = 0;
+        while len < slice.len() && (0x20..=0x7E).contains(&slice[len]) {
+            len += 1;
+        }
+        &slice[..len]
+    }
+
+    /// Returns the factory serial number ASCII string stored in Block 2 (`0x06A..0x07B`, e.g. `"24111100001"`).
+    pub fn serial_number_bytes(&self) -> &[u8] {
+        let slice = &self.raw[0x06A..0x07B];
+        let mut len = 0;
+        while len < slice.len() && (0x20..=0x7E).contains(&slice[len]) {
             len += 1;
         }
         &slice[..len]

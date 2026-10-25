@@ -100,7 +100,8 @@ pub const fn inverse_park_transform(
     AlphaBeta { alpha, beta }
 }
 
-/// 7-segment Space Vector PWM (SVPWM) via min-max common-mode neutral-point injection.
+/// 7-segment Space Vector PWM (SVPWM) via min-max common-mode neutral-point injection,
+/// enforcing the `[6%, 94%]` dead-time and high-side bootstrap charge window.
 pub fn compute_svpwm(v_ab: AlphaBeta, pwm_period: u16) -> PhaseDuties {
     let v_a = v_ab.alpha;
     let half_alpha = v_ab.alpha / 2;
@@ -113,10 +114,13 @@ pub fn compute_svpwm(v_ab: AlphaBeta, pwm_period: u16) -> PhaseDuties {
     let v_max = v_a.max(v_b).max(v_c);
     let v_offset = (v_min + v_max) / 2;
 
+    let min_duty = ((pwm_period as u32 * 6) / 100) as i64;
+    let max_duty = ((pwm_period as u32 * 94).div_ceil(100)) as i64;
+
     let map_duty = |v_phase: i32| -> u16 {
         let shifted = (v_phase - v_offset).clamp(-32768, 32767);
         let num = (shifted + 32768) as i64 * (pwm_period as i64);
-        (num >> 16).clamp(0, pwm_period as i64) as u16
+        (num >> 16).clamp(min_duty, max_duty) as u16
     };
 
     PhaseDuties {
@@ -249,6 +253,12 @@ impl HallPllObserver {
             }
         }
         Some(self.estimated_angle)
+    }
+
+    /// Returns the estimated electrical rotor speed in RPM (`16 kHz` ISR tick rate).
+    pub const fn velocity_rpm(&self) -> u16 {
+        let step_abs = self.angular_velocity_step.unsigned_abs() as u32;
+        ((step_abs * 960_000) >> 16) as u16
     }
 }
 

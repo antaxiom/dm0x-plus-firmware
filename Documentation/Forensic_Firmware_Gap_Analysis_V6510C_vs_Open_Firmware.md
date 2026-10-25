@@ -51,9 +51,88 @@ Both DM01 and DM02 firmware load at `0x08001800` (directly above the 6 KB factor
 | **IRQ 18** | `+0x88` | `0x08001C8D` | `0x08001C8D` | `ADC1_2` Dual Injected End-of-Conversion (`JEOC`) | Fast FOC loop trigger in `firmware.rs` |
 | **IRQ 24** | `+0xA0` | `0x08007DD1` | `0x08007E61` | `TIM1_BRK_TIM9` (Hardware Overcurrent Break Trip) | Registers mapped in `pac.rs` |
 | **IRQ 25** | `+0xA4` | `0x08007E49` | `0x08007EC5` | `TIM1_UP_TIM10` (PWM Carrier Frequency Update) | Supported via TIM1 registers |
-| **IRQ 28** | `+0xB0` | `0x08007E65` | `0x08007ED5` | `TIM2` (Hall Sensor Input Capture / Commutation) | Supported via `foc.rs` Hall observer |
-| **IRQ 30** | `+0xB8` | `0x08007E81` | `0x08007EF1` | `TIM4` (Wheel Speed & Crank Cadence Timer) | Supported via `sensors.rs` |
-| **IRQ 39** | `+0xDC` | `0x080095D9` | `0x080096A9` | `USART3` (Display UART 9600 Baud + `0x69` Cipher) | Full wire encoder/decoder in `protocol.rs` |
+| **IRQ 28** | `+0xB0` | `0x08007E65` | `0x08007ED5` | `TIM2` (10 kHz Quadrature PAS Cadence on `PD0` + `PA15`) | Implemented in `hal.rs` |
+| **IRQ 30** | `+0xB8` | `0x08007E81` | `0x08007EF1` | `TIM4` (Motor Hall Sensor XOR Commutation on `PB6..8`) | Supported via `foc.rs` Hall observer |
+| **IRQ 39** | `+0xDC` | `0x080095D9` | `0x080096A9` | `USART3` (Display UART 9600 Baud + `0x69` Cipher) | Full `0x5A` & 7-bit `0xC0..0x80` codecs in `protocol.rs` |
+| **IRQ 50** | `+0x108` | `0x08007FC5` | `0x08008035` | `TIM5` (10 kHz Wheel Speed `PA3`, Brake `PB2`, Headlight `PC15`, LED `PA2`) | Implemented in `hal.rs` |
+
+---
+
+## 2.1 Complete Hardware Pinout & Peripheral Map (`0x0800B8DC`..`0x0800DD88`)
+
+| MCU Pin | Peripheral / Mode | Decompiled Function (`V6206C`..`V6510C`) | `dm01-firmware` Implementation |
+| :--- | :--- | :--- | :--- |
+| **`PA0, PA1`** | `ADC1_IN0/IN1` (Analog) | Controller/Motor NTC Temperature Sensor (`DMA_ADC[0]`) | Configured in `hal.rs` |
+| **`PA2`** | `GPIO_Out_PP` (10 MHz) | Controller Status / Fault Blink LED (`0x08002094`) | Driven via `Dm01SensorsHardware::set_outputs` |
+| **`PA3`** | `GPIO_IPU` (Input Pull-Up) | External Wheel Speed Sensor (`TIM5` 10 kHz ISR `0x08005A74`) | Polled in `Dm01SensorsHardware::sample_control_inputs` |
+| **`PA4`** | `ADC1_IN4` (Analog) | Torque Strain Gauge `PedalVol` (`DMA_ADC[1]`) | Sampled via `DMA1_Ch1` in `hal.rs` |
+| **`PA5, PA6`** | `ADC2_IN5/IN6` (Injected) | Phase B & Phase A Low-Side Shunt Currents (`0x08009A6C`) | 256-sample auto-zero + `JOFR1` in `hal.rs` |
+| **`PA7`** | `ADC1_IN7` (Analog) | Battery Voltage Divider / Throttle (`DMA_ADC[2]`) | Sampled via `DMA1_Ch1` in `hal.rs` |
+| **`PA8..PA10`** | `TIM1_CH1..3` (`AF_PP`) | High-Side 3-Phase Inverter Gates (`ARR=6249`, `CCR4=5999`) | Driven by `Dm01PwmHardware` |
+| **`PA15`** | `GPIO_IPU` (`SWJ_JTAGDisable`) | Quadrature PAS Cadence Channel B (`TIM2` 10 kHz ISR `0x0800574C`) | Remapped via `AFIO->MAPR` & polled in `hal.rs` |
+| **`PB0, PB1`** | `ADC1_IN8/IN9` (Analog) | Throttle Hall `ThrottleVol` & Aux Reference (`DMA_ADC[3..4]`) | Sampled via `DMA1_Ch1` in `hal.rs` |
+| **`PB2`** | `GPIO_IPU` (Input Pull-Up) | Brake Cutout Switch (`0x0800210C`, 5-tick debounce) | Polled in `hal.rs` |
+| **`PB6..PB8`** | `TIM4_CH1..3` (`GPIO_IPU`) | Motor Hall Sensors A, B, C (`(GPIOB->IDR >> 6) & 7`) | Polled in `Dm01SensorsHardware::read_hall_bits` |
+| **`PB9`** | `TIM11_CH1` (`AF_PP`) | 1 kHz 50% Duty Sensor Excitation PWM (`0x0800A1D0`) | Documented hardware excitation reference |
+| **`PB10, PB11`** | `USART3_TX/RX` (`9600 Bd`) | Display UART with `0x69` XOR Stream Cipher (`0x0800B84C`) | Full TX/RX in `pac.rs` & `protocol.rs` |
+| **`PB12`** | `TIM1_BKIN` (Input) | Hardware Overcurrent Comparator Break Input (`0x0800D728`) | Enabled via `BDTR.BKE` in `hal.rs` |
+| **`PB13..PB15`** | `TIM1_CH1N..3N` (`AF_PP`) | Low-Side 3-Phase Complementary Gates (`DTG = 0x64`) | Driven by `Dm01PwmHardware` |
+| **`PC15`** | `GPIO_Out_PP` (10 MHz) | Headlight / Walk-Assist Output (`0x080061A4`) | Driven via `Dm01SensorsHardware::set_outputs` |
+| **`PD0`** | `GPIO_IPU` (`PD01_REMAP`) | Quadrature PAS Cadence Channel A (`TIM2` 10 kHz ISR `0x0800574C`) | Remapped via `AFIO->MAPR` & polled in `hal.rs` |
+
+---
+
+## 2.2 Historical Firmware Evolution & Diff Matrix (All 17 Factory `.Pack` Releases)
+
+Every single one of the 17 historical `.Pack` containers embeds a valid 480-byte 5-block (`0x20, 0x40, 0x40, 0xA0, 0xA0`) plaintext factory EEPROM table in Flash ROM and encodes the decimal firmware version in `decrypted_header[1..3]`.
+
+> [!NOTE]
+> **Forensic Discovery — Factory EEPROM Block 2 Engineering String (`"Sitgo-Rear"`):**
+> Across all 17 factory `.Pack` firmwares from 2024 to 2026, the factory default EEPROM table embeds the ASCII string `"Sitgo-Rear 1700W"` (on DM01) and `"Sitgo-Rear 1500W"` (on DM02) at byte offset `0x07D..0x09E` in Block 2, alongside recurring placeholder serial numbers (`24111100001` on DM01, `230801230801` on DM02). Because both DM01 and DM02 are bottom-bracket mid-drive motors (rather than rear hub motors), this string is an internal vendor engineering template artifact (likely inherited from a shared factory calibration profile or ODM codebase) rather than a commercial consumer vehicle designation.
+
+### DM01 (`TS1000W` — 6 Releases)
+| Release File | Version (`hdr[1..3]`) | Keys (`K_hdr`/`K_pay`/`UartMask`) | Payload Size | Initial `MSP` | Embedded EEPROM Offset & Block 1 Magic | Key Binary & EEPROM Diffs vs. Predecessor |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `TO7-DM01-K241021-V6212C.Pack` | `6212` (`0x1844`) | `0xF1` / `0xCC` / `0xB5` | `56,644 B` | `0x20005618` | `0x0800EA44` (`A5 01 FE`) | Initial `V6212C` baseline (`65.0 A` peak shunt limit, `55.0 V` HV cap). |
+| `TO7-DM01-K250731-V6510C.Pack` | `6510` (`0x196E`) | `0xD7` / `0xF4` / `0xCC` | `57,704 B` | `0x20005628` | `0x0800EE6C` (`A5 01 FE`) | `+1,060 B` (`V6510C` architecture): adds 50.0 V constant-power cap, `MSP +16 B`. |
+| `TO7-DM01-K250926-V6510C.Pack` | `6510` (`0x196E`) | `0xEA` / `0xB8` / `0xDC` | `57,704 B` | `0x20005628` | `0x0800EE6C` (`A5 01 FE`) | `55 B` code/table diff (`0 B` size delta): minor FOC & EEPROM threshold tweak. |
+| `TO7-DM01-K260108-V6510C.Pack` | `6510` (`0x196E`) | `0x20` / `0x46` / `0xA8` | `57,708 B` | `0x20005628` | `0x0800EE70` (`A5 01 FE`) | `+4 B` code insertion (`8,808 B` shifted); `TS1000W` EEPROM reaches May 2026 baseline. |
+| `TO7-DM01-K260521A-V6510C.Pack` | `6510` (`0x196E`) | `0xA8` / `0x67` / `0x89` | `57,708 B` | `0x20005628` | `0x0800EE70` (`A5 01 FE`) | `46 B` in-place patch (`0 B` size delta); 100% identical 480 B EEPROM to `K260108`. |
+| `TO7-DM01-K261023-V6510C.Pack` | `6510` (`0x196E`) | `0xBA` / `0x3E` / `0x16` | `58,532 B` | `0x20005638` | `0x0800F1AC` (`A5 01 FE`) | `+824 B` expansion (`MSP +16 B`): `TS\x11000W` profile, 15-magnet speed sensor (`0x1D3 = 15`). |
+
+### DM02 (`TS500W` — 11 Releases)
+| Release File | Version (`hdr[1..3]`) | Keys (`K_hdr`/`K_pay`/`UartMask`) | Payload Size | Initial `MSP` | Embedded EEPROM Offset & Block 1 Magic | Key Binary & EEPROM Diffs vs. Predecessor |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `TO7-DM02-K240512A-V6206C.Pack` | `6206` (`0x183E`) | `0x34` / `0xD5` / `0xD2` | `56,508 B` | `0x20005618` | `0x0800E9B8` (**`A5 FD 02`**) | Earliest `V6206C` release: uses legacy `A5 FD 02` (`0xFD ^ 0x02 == 0xFF`) Block 1 magic. |
+| `TO7-DM02-K240612B-V6306C.Pack` | `6306` (`0x18A2`) | `0xDD` / `0x37` / `0x59` | `56,644 B` | `0x20005618` | `0x0800EA44` (`A5 01 FE`) | `+136 B`: transitions Block 1 magic to `A5 01 FE`; updates `Pwr[0..5]` to `25/35/50/70/100%`. |
+| `TO7L-DM02-K240723A-V6306C.Pack` | `6306` (`0x18A2`) | `0xBE` / `0xDF` / `0xA9` | `56,644 B` | `0x20005618` | `0x0800EA44` (`A5 01 FE`) | `46 B` in-place diff (`TO7L` variant); 100% identical 480 B EEPROM to `K240612B`. |
+| `TO7-DM02-K241016-V6212C.Pack` | `6212` (`0x1844`) | `0xEC` / `0x4A` / `0xD4` | `56,668 B` | `0x20005618` | `0x0800EA5C` (`A5 01 FE`) | `+24 B`: unified `V6212C` branch with DM01. |
+| `TO7-DM02-K241031-V6303C.Pack` | `6303` (`0x189F`) | `0x40` / `0x79` / `0x5A` | `56,440 B` | `0x20005618` | `0x0800E974` (**`A5 FD 02`**) | Maintenance build on `V6206C`/`V6303C` branch retaining `A5 FD 02` Block 1 magic. |
+| `TO7-DM02-K241129A-V6400C.Pack` | `6400` (`0x1900`) | `0x8A` / `0xCE` / `0x6E` | `57,808 B` | `0x20005620` | `0x0800EECA` (`A5 01 FE`) | `+1,368 B` (`V6400C`): raises `MSP` to `0x20005620`, adds extended telemetry & BLE prep. |
+| `TO7-DM02-K250402-V6400C.Pack` | `6400` (`0x1900`) | `0x5F` / `0x5B` / `0xFA` | `58,360 B` | `0x20005620` | `0x0800F0F2` (`A5 01 FE`) | `+552 B`: refines torque auto-zero & cadence filters; EEPROM matches `V6510C` except `0x1900` tag. |
+| `TO7-DM02-K250801-V6510C.Pack` | `6510` (`0x196E`) | `0x23` / `0x9B` / `0x1E` | `58,436 B` | `0x20005620` | `0x0800F13E` (`A5 01 FE`) | `+76 B`: first DM02 `V6510C` build; 480 B EEPROM reaches final `TS500W` factory image. |
+| `TO7-DM02-K260203-V6510C.Pack` | `6510` (`0x196E`) | `0xD7` / `0x45` / `0x83` | `58,440 B` | `0x20005620` | `0x0800F142` (`A5 01 FE`) | `+4 B` alignment update; 100% identical 480 B EEPROM to `K250801`. |
+| `TO7-DM02-K260526-V6510C.Pack` | `6510` (`0x196E`) | `0xF7` / `0xE2` / `0xA9` | `58,440 B` | `0x20005620` | `0x0800F142` (`A5 01 FE`) | `46 B` in-place patch (`0 B` size delta); 100% identical 480 B EEPROM to `K250801` & `K260203`. |
+| `TO7-DM02-K261023-V6510C.Pack` | `6510` (`0x196E`) | `0x32` / `0xDA` / `0x3E` | `58,456 B` | `0x20005620` | `0x0800F152` (`A5 01 FE`) | `+16 B` (`+4 B` @ `0x080067FA`, `+12 B` @ `0x08009253`); 100% identical 480 B EEPROM. |
+
+---
+
+## 2.3 Decompiled Native `V6510C` 7-Bit UART Display Protocol (`0xC0 | cmd` .. `0x80 | crc_lo`)
+
+In addition to the 18-byte `0x5A` telemetry/command framing, disassembly of `0x0800BFD0` (RX synchronizer), `0x0800E21C` (TX packet builder), `0x0800473C` (command dispatcher), and `0x080052A4` (telemetry scheduler) revealed the native 7-bit wire framing used across all 17 historical firmwares underneath the `0x69` stream XOR cipher:
+- **Start-of-Frame (SOF):** `buf[0] = 0xC0 | (cmd & 0x3F)` (top 2 bits `0b11`).
+- **7-Bit Data Payload:** `buf[1..1+N]` where every byte has bit 7 cleared (`b & 0x80 == 0`), and 14-bit integers are big-endian packed as `[((val >> 7) & 0x7F) as u8, (val & 0x7F) as u8]`.
+- **3-Byte Packed CRC-16 + End-of-Frame (`0x08002AA8` / `0x08002458`):**
+  - `crc = crc16_toseven(&buf[0..1+N])`
+  - `buf[1+N] = ((crc >> 9) & 0x7F) as u8`
+  - `buf[2+N] = ((crc >> 2) & 0x7F) as u8`
+  - `buf[3+N] = 0x80 | ((crc & 0x03) as u8)` (top 2 bits `0b10` mark End-of-Frame).
+- **Supported Display Commands (`V6510cDisplayCommandDecoder` in [`src/protocol.rs`](../dm01-firmware/src/protocol.rs)):**
+  - `cmd 0x1E` (`0xDE`, `@0x0800490E`): Periodic status (`bit 5` = headlight, `bit 6` = walk assist, `bits 0..3` = assist level `0..5`).
+  - `cmd 0x31` (`0xF1`, `@0x08004D38`): Explicit riding mode selection (`data[0] == 0x01`, `data[1] & 0x0F` = `Eco`/`City`/`Sport`).
+  - `cmd 0x03` (`0xC3`, `@0x08004A3C`) subcmd `0x1D`: Live riding mode and assist level sync.
+- **Supported Controller Telemetry Builders (`TelemetryFrame::encode_v6510c_*` in [`src/protocol.rs`](../dm01-firmware/src/protocol.rs)):**
+  - `0xF0` (`cmd 0x30` status/Hall), `0xE7` (`cmd 0x27` temp + 15°C), `0xE6` (`cmd 0x26` SOC %), `0xEE` (`cmd 0x2E` torque mV), `0xEF` (`cmd 0x2F` current 0.1A), `0xEB` (`cmd 0x2B` cadence RPM), `0xF2` (`cmd 0x32` display error code).
 
 ---
 
@@ -128,7 +207,7 @@ Both DM01 and DM02 firmware load at `0x08001800` (directly above the 6 KB factor
 | Power Curve & Arbitrator      | 100% Bit-Exact | Dual ceilings, 50V cap, LVC taper     |
 | Display Protocol (0x69 wire)  | 100% Bit-Exact | 18-byte framing, byte muxing, CRC-16  |
 | EEPROM Structure & CRC-16     | 100% Bit-Exact | 5-block XOR 0xA5, TS1000W / TS500W    |
-| Universal .Pack Key Decoder   | 100% Verified  | 15/15 factory packs pass bit-exact    |
+| Universal .Pack Key Decoder   | 100% Verified  | 17/17 factory packs pass bit-exact    |
 | Display Lockout Patching      | 100% Clean     | 6-gate NOP clean-room patcher verified|
 | Hardware ADC_JOFRx Auto-Zero  | 100% Parity    | 256-sample average to JOFR1/2 (0x9A6C)|
 | Hardware TIM1_BDTR Break Trip | 100% Parity    | BDTR.BKE enabled, <50ns shutdown      |

@@ -60,6 +60,11 @@ pub const KNOWN_RELEASES: &[StockRelease] = &[
         target: MotorTarget::Dm01,
         pack_sha256: hex("eb964a1787ba90f35965921353911c8a6e3083e1914cf422caeaa515f36ee579"),
     },
+    StockRelease {
+        name: "TO7-DM01-K261023-V6510C",
+        target: MotorTarget::Dm01,
+        pack_sha256: hex("ff557c78825816d70e12dcecf83c9efba9fc4cb5908e4baefd60acee7d97fad2"),
+    },
     // DM02 Releases (250W / 350W / 500W)
     StockRelease {
         name: "TO7-DM02-K240512A-V6206C",
@@ -105,6 +110,11 @@ pub const KNOWN_RELEASES: &[StockRelease] = &[
         name: "TO7-DM02-K260526-V6510C",
         target: MotorTarget::Dm02,
         pack_sha256: hex("3ab150d10d3106080233d4f41e7df6a13f67154994138d831df67b1094ea1ca2"),
+    },
+    StockRelease {
+        name: "TO7-DM02-K261023-V6510C",
+        target: MotorTarget::Dm02,
+        pack_sha256: hex("efd792ce43f36dce30bf3a94a3e89bf2be0ee7f95b17b5b15fe32d119b2380de"),
     },
     StockRelease {
         name: "TO7L-DM02-K240723A-V6306C",

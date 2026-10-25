@@ -4,12 +4,17 @@
 
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
+use dm01_firmware::battery::{BatteryMonitor, BatteryPreset};
 use dm01_firmware::config::{AssistSelection, MotorConfig};
 use dm01_firmware::control::Dm01Controller;
+use dm01_firmware::faults::{FaultDetector, FaultFlags};
 use dm01_firmware::foc::{FocCurrentLoop, HallPllObserver};
 use dm01_firmware::hal::{Dm01PwmHardware, Dm01SensorsHardware, MotorSensorsHal, ThreePhasePwm};
 use dm01_firmware::pac::HardwarePeripherals;
-use dm01_firmware::protocol::{DisplayCommandDecoder, TelemetryFrame, UART_STREAM_XOR_KEY};
+use dm01_firmware::protocol::{
+    DisplayCommandDecoder, IapWakeupDetector, LiveParamDecoder, TelemetryFrame,
+    V6510cDisplayCommandDecoder, UART_STREAM_XOR_KEY,
+};
 
 extern "C" {
     static _sidata: u32;
@@ -106,8 +111,9 @@ pub unsafe extern "C" fn _start() -> ! {
 
 #[no_mangle]
 pub unsafe extern "C" fn Reset_Handler() -> ! {
-    // 0. Initialize SRAM (.data and .bss)
+    // 0. Initialize SRAM (.data and .bss) and disable any bootloader-leftover NVIC IRQs
     init_ram();
+    HardwarePeripherals::disable_all_nvic_irqs();
 
     // 1. Enable Hardware Single-Precision FPU (CP10 and CP11)
     HardwarePeripherals::enable_fpu();
@@ -136,8 +142,11 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     if let Some(flash_img) = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() } {
         config.apply_eeprom_image(&flash_img);
     }
+    sensors.configure_from_motor_config(&config);
     let angle_offset_deg = config.motor_hw.angle_offset_deg;
     let foc_cfg = config.foc_config;
+    let mut battery_monitor = BatteryMonitor::new(BatteryPreset::V48, config.nominal_voltage_mv);
+    let mut fault_detector = FaultDetector::new();
     let mut controller = Dm01Controller::with_tuning(
         config,
         dm01_firmware::tuning::TuningProfile::gear_safe_trail(),
@@ -152,7 +161,11 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
     let mut first_tick = true;
     let mut telemetry_tick: u16 = 0;
     let mut cmd_decoder = DisplayCommandDecoder::new();
+    let mut v6510c_decoder = V6510cDisplayCommandDecoder::new();
+    let mut live_param_decoder = LiveParamDecoder::new();
+    let mut iap_wakeup = IapWakeupDetector::new();
     let mut display_walk_held = false;
+    let mut display_headlight_on = false;
 
     let mut last_ms: u32 = 0;
 
@@ -169,18 +182,20 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
             // A. Feed Hardware Watchdog to prevent MCU reset
             HardwarePeripherals::feed_iwdg();
 
-            // B. Poll USART3 RX non-blockingly for incoming display command frames or IAP wakeup
+            // B. Poll USART3 RX non-blockingly for incoming display commands, live tuning, or IAP wakeup
             while HardwarePeripherals::usart3_has_rx() {
                 let wire_b = HardwarePeripherals::usart3_read_byte();
                 let plain_b = wire_b ^ UART_STREAM_XOR_KEY;
 
-                // Check for IAP Wakeup / Reboot command (0xC9, 0x77)
-                if plain_b == 0xC9 || wire_b == 0xC9 {
-                    // Reset MCU into system bootloader via SCB AIRCR
+                // Require verified 2-byte IAP Wakeup prefix ([0xC9, 0x77]) before rebooting
+                if iap_wakeup.push_byte(wire_b, plain_b) {
                     HardwarePeripherals::system_reset();
                 }
 
-                if let Some(cmd) = cmd_decoder.push_byte(plain_b) {
+                if let Some(cmd) = cmd_decoder
+                    .push_byte(plain_b)
+                    .or_else(|| v6510c_decoder.push_byte(plain_b))
+                {
                     controller.mode = cmd.mode;
                     controller.assist = if cmd.assist_level == 0 {
                         AssistSelection::Off
@@ -188,6 +203,14 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
                         AssistSelection::Level(cmd.assist_level)
                     };
                     display_walk_held = cmd.walk_assist_active;
+                    display_headlight_on = cmd.headlight_on;
+                }
+
+                if let Some(update) = live_param_decoder
+                    .push_byte(plain_b)
+                    .or_else(|| live_param_decoder.push_byte(wire_b))
+                {
+                    controller.apply_live_param_update(&update);
                 }
             }
 
@@ -196,30 +219,60 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
                 inputs.walk_assist_held = true;
             }
 
+            let soc_pct = battery_monitor.update(
+                inputs.battery_voltage_mv,
+                controller.config.low_cut_voltage_mv,
+                1,
+            );
+            let _ = fault_detector.step_startup_calibration(
+                inputs.torque_adc_mv,
+                inputs.cadence_rpm,
+                1,
+            );
+            let eff_speed = controller.effective_wheel_speed_deci_kph(&inputs);
+            let mut active_faults = fault_detector.evaluate_runtime(
+                current_target_ma.max(0) as u32,
+                observer.velocity_rpm(),
+                eff_speed,
+                inputs.torque_adc_mv,
+                inputs.throttle_adc_mv,
+                sensors.read_hall_bits(),
+                inputs.controller_temp_c >= controller.config.temp_ctl_max_c,
+                inputs.motor_temp_c >= controller.config.temp_mot_max_c,
+                battery_monitor.low_voltage_tripped,
+                1,
+            );
+            if pwm.has_break_trip() {
+                active_faults.insert(FaultFlags::CONTROLLER_MOSFET_FAIL);
+            }
+
             let output = controller.step_v6510c(&inputs);
             current_target_ma = output.target_current_ma as i32;
-            cutoff_active = output.cutoff_active;
+            cutoff_active = output.cutoff_active
+                || active_faults.inhibits_drive(controller.config.speed_sensor_fail_unlimit);
 
             if cutoff_active || current_target_ma == 0 {
                 pwm.disable_inverter();
                 foc.reset();
             }
 
+            // Drive physical PC15 headlight/walk output and PA2 status/fault LED
+            sensors.set_outputs(display_headlight_on, !active_faults.is_empty());
+
             // Periodically transmit stock 18-byte telemetry frame to display (20 Hz / 50 ms)
             telemetry_tick += 1;
             if telemetry_tick >= 50 {
                 telemetry_tick = 0;
-                let eff_speed = controller.effective_wheel_speed_deci_kph(&inputs);
                 let frame = TelemetryFrame {
                     battery_voltage_deci_v: (inputs.battery_voltage_mv / 100) as u16,
-                    battery_soc_percent: 100,
+                    battery_soc_percent: soc_pct,
                     phase_current_deci_a: (current_target_ma.max(0) as u32 / 100) as u16,
                     wheel_speed_deci_kph: eff_speed,
                     cadence_rpm: inputs.cadence_rpm,
                     torque_sensor_mv: inputs.torque_adc_mv,
                     throttle_mv: inputs.throttle_adc_mv,
                     controller_temp_c: inputs.controller_temp_c as i8,
-                    faults: dm01_firmware::faults::FaultFlags::NONE,
+                    faults: active_faults,
                 };
                 let mut tx_buf = [0u8; 18];
                 frame.encode_encrypted_wire(&mut tx_buf);

@@ -115,6 +115,39 @@ impl Dm01Controller {
         controller
     }
 
+    /// Applies an in-SRAM [`crate::protocol::LiveParamUpdateFrame`] (`0x95`) without MCU reboot or EEPROM wear.
+    /// Respects [`MotorConfig::is_street_legal_locked()`] so permanent compliance locks cannot be bypassed.
+    pub fn apply_live_param_update(&mut self, update: &crate::protocol::LiveParamUpdateFrame) {
+        if self.config.is_street_legal_locked() {
+            return;
+        }
+        if update.max_sport_current_a > 0 {
+            self.config.max_current_sport_ma = (update.max_sport_current_a as u32).min(32) * 1_000;
+        }
+        if update.max_city_current_a > 0 {
+            self.config.max_current_city_ma = (update.max_city_current_a as u32).min(32) * 1_000;
+        }
+        if update.max_eco_current_a > 0 {
+            self.config.max_current_eco_ma = (update.max_eco_current_a as u32).min(32) * 1_000;
+        }
+        if update.speed_limit_kph > 0 {
+            let speed_deci_kph = (update.speed_limit_kph as u16).saturating_mul(10);
+            let mut i = 0;
+            while i < self.config.levels.len() {
+                self.config.levels[i].speed_limit_deci_kph = speed_deci_kph;
+                i += 1;
+            }
+        }
+        if update.throttle_mode <= 12 {
+            self.config.throttle_control_mode = update.throttle_mode;
+        }
+        self.tuning.ceiling_policy = if update.assist_ceiling_policy == 0 {
+            crate::tuning::AssistCeilingPolicy::StockDualCeiling
+        } else {
+            crate::tuning::AssistCeilingPolicy::UnifiedLevelCeiling
+        };
+    }
+
     /// Computes the effective vehicle speed in 0.1 km/h.
     ///
     /// If a physical wheel speed sensor reading is available (`wheel_speed_deci_kph > 0`),
@@ -187,24 +220,35 @@ impl Dm01Controller {
         let lvc_dv = (self.config.low_cut_voltage_mv / 100) as u16;
 
         let street_legal_active = self.is_currently_street_legal();
+        let temp_min_c = if self.tuning.thermal_rollback_start_c != 70 {
+            self.tuning.thermal_rollback_start_c
+        } else {
+            self.config.temp_ctl_min_c
+        };
+        let temp_max_c = if self.tuning.thermal_rollback_cutoff_c != 100 {
+            self.tuning.thermal_rollback_cutoff_c
+        } else {
+            self.config.temp_ctl_max_c
+        };
 
         // 1. Stage 1 Ceilings: Global Mode Ceiling (Torque) vs Level Power Ceiling (PAS/Throttle)
         let global_ceil_da = compute_global_mode_ceiling_da(
             mode_max_da,
             sport_max_da,
             inputs.controller_temp_c,
-            self.config.temp_ctl_min_c,
-            self.config.temp_ctl_max_c,
+            temp_min_c,
+            temp_max_c,
             battery_dv,
         );
         let global_ceil_da = if street_legal_active {
             // EN15194 250W continuous limit: at battery voltage, clamp continuous current to ~250W
+            // (e.g., 52 dA = 5.2A = 249.6W at 48V, 69 dA = 6.9A at 36V, minimum 3.0A floor).
             let en15194_max_da = if battery_dv > 0 {
                 ((2500u32 * 10) / (battery_dv as u32)) as u16
             } else {
                 55
             };
-            global_ceil_da.min(en15194_max_da.max(60))
+            global_ceil_da.min(en15194_max_da.max(30))
         } else {
             global_ceil_da
         };
@@ -214,8 +258,8 @@ impl Dm01Controller {
             sport_max_da,
             level_cfg.power_percent,
             inputs.controller_temp_c,
-            self.config.temp_ctl_min_c,
-            self.config.temp_ctl_max_c,
+            temp_min_c,
+            temp_max_c,
             battery_dv,
         );
         let level_ceil_da = if street_legal_active {

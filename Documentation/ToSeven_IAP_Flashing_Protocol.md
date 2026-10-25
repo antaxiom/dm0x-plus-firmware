@@ -22,7 +22,7 @@ All details in this specification have been reverse-engineered, validated agains
   * `Pin 4 (Green):` Controller RX (connects to USB-UART TX)
   * `Pin 5 (Yellow):` Controller TX (connects to USB-UART RX)
 * **Baud Rates:**
-  * **Normal IAP Programming:** `115200 Baud` (8 data bits, 1 stop bit, no parity, `8-N-1`).
+  * **Normal IAP Programming:** `38400 Baud` factory bootloader default (with `115200 Baud` fallback; 8 data bits, 1 stop bit, no parity, `8-N-1`).
   * **Application Run Mode:** `9600 Baud` (or `19200 Baud` depending on display protocol).
   * **Recovery / Restart Trigger:** `9600 Baud` (used by the flasher to command a running MCU into IAP mode).
 * **Hardware Reset Control:**
@@ -78,7 +78,7 @@ Flasher (PC / CLI)                                Controller Bootloader (MCU)
   |  [If MCU in App mode: Send 21B Wakeup @ 9600 + DTR Reset]  |
   |----------------------------------------------------------->|
   |                                                            |
-  |  1. Probe @ 115200 Baud: [0x02]                            |
+  |  1. Probe @ 38400 Baud (115200 fallback): [0x02]           |
   |----------------------------------------------------------->|
   |                                                            |
   |  2. Identification Response: [0x02, 0xFD]                  |

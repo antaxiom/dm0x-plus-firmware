@@ -43,7 +43,7 @@ impl MotorTarget {
     pub const fn from_device_id(id24: u32) -> Self {
         match id24 {
             0x0019_6EA4 => Self::Dm01,
-            0x0019_6EA3 => Self::Dm02,
+            0x0019_6EA3 | 0x0019_6EE4 => Self::Dm02,
             other => Self::Unknown(other),
         }
     }
@@ -86,10 +86,53 @@ impl PackMetadata {
         sum == self.payload_checksum
     }
 
-    /// Returns the 16-bit OEM / Customer ID (`decrypted_header[1..3]`, e.g. `0x196E` = 6510 for V6510C).
+    /// Returns the 16-bit OEM / Firmware Version number (`decrypted_header[1..3]`,
+    /// e.g. `6206`, `6212`, `6303`, `6306`, `6400`, `6510`).
     pub fn customer_num(&self) -> u16 {
         u16::from_le_bytes([self.decrypted_header[1], self.decrypted_header[2]])
     }
+
+    /// Alias for [`Self::customer_num`]: returns the decimal firmware version number
+    /// encoded in `decrypted_header[1..3]` (`6206` for `V6206C`, `6510` for `V6510C`, etc.).
+    pub fn firmware_version_number(&self) -> u16 {
+        self.customer_num()
+    }
+}
+
+/// Scans an encrypted `.Pack` payload slice (`pack_bytes[34..34+payload_len]`) for the embedded
+/// 480-byte factory EEPROM table and determines the hardware [`MotorTarget`] from its Block 1
+/// model string (`"TS1000W"` / `"TS\x11000W"` vs `"TS500W"`).
+fn detect_target_from_encrypted_payload(
+    enc_payload: &[u8],
+    payload_xor_key: u8,
+) -> Option<MotorTarget> {
+    use crate::eeprom::{EEPROM_TOTAL_LEN, EEPROM_XOR_KEY};
+    if enc_payload.len() < EEPROM_TOTAL_LEN {
+        return None;
+    }
+    let max_start = enc_payload.len() - EEPROM_TOTAL_LEN;
+    let mut off = 0;
+    while off <= max_start {
+        let b5a = enc_payload[off + 0x05A] ^ payload_xor_key;
+        let b5b = enc_payload[off + 0x05B] ^ payload_xor_key;
+        let b5c = enc_payload[off + 0x05C] ^ payload_xor_key;
+        if b5a == EEPROM_XOR_KEY && (b5b ^ b5c) == 0xFF {
+            let mut m = [0u8; 7];
+            let mut k = 0;
+            while k < 7 {
+                m[k] = enc_payload[off + 0x020 + k] ^ payload_xor_key;
+                k += 1;
+            }
+            if &m == b"TS1000W" || &m == b"TS\x11000W" {
+                return Some(MotorTarget::Dm01);
+            }
+            if &m[..6] == b"TS500W" {
+                return Some(MotorTarget::Dm02);
+            }
+        }
+        off += 1;
+    }
+    None
 }
 
 /// Errors returned when parsing or repacking a `.Pack` container.
@@ -137,7 +180,6 @@ pub fn parse_pack_metadata(pack_bytes: &[u8]) -> Result<PackMetadata, PackError>
     let device_id_24 = (decrypted_header[0] as u32)
         | ((decrypted_header[1] as u32) << 8)
         | ((decrypted_header[2] as u32) << 16);
-    let target = MotorTarget::from_device_id(device_id_24);
 
     let payload_len = u16::from_le_bytes([decrypted_header[24], decrypted_header[25]]) as usize;
     if PACK_HEADER_LEN + payload_len > pack_bytes.len() {
@@ -155,6 +197,10 @@ pub fn parse_pack_metadata(pack_bytes: &[u8]) -> Result<PackMetadata, PackError>
     } else {
         vec_payload_key
     };
+
+    let enc_payload = &pack_bytes[PACK_HEADER_LEN..PACK_HEADER_LEN + payload_len];
+    let target = detect_target_from_encrypted_payload(enc_payload, payload_xor_key)
+        .unwrap_or_else(|| MotorTarget::from_device_id(device_id_24));
 
     let chk_hi = u16::from_le_bytes([decrypted_header[26], decrypted_header[27]]) as u32;
     let chk_lo = u16::from_le_bytes([decrypted_header[28], decrypted_header[29]]) as u32;
@@ -288,11 +334,19 @@ pub fn extract_flash_from_elf(data: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut max_addr = 0u32;
 
     for i in 0..phnum {
-        let entry_offset = phoff + i * phentsize;
-        if entry_offset + 32 > data.len() {
+        let Some(entry_offset) = i
+            .checked_mul(phentsize)
+            .and_then(|off| phoff.checked_add(off))
+        else {
+            return Err("ELF program header offset overflow");
+        };
+        let Some(entry_end) = entry_offset.checked_add(32) else {
+            return Err("ELF program header entry overflow");
+        };
+        if entry_end > data.len() {
             break;
         }
-        let seg_bytes = &data[entry_offset..entry_offset + 32];
+        let seg_bytes = &data[entry_offset..entry_end];
         let p_type = u32::from_le_bytes(seg_bytes[0..4].try_into().unwrap());
         let p_offset = u32::from_le_bytes(seg_bytes[4..8].try_into().unwrap()) as usize;
         let p_paddr = u32::from_le_bytes(seg_bytes[12..16].try_into().unwrap());
@@ -302,7 +356,9 @@ pub fn extract_flash_from_elf(data: &[u8]) -> Result<Vec<u8>, &'static str> {
         if p_type == 1 && p_filesz > 0 {
             // Flash load segments (e.g. 0x08001800..0x08080000)
             if (APP_FLASH_BASE_ADDR..0x0808_0000).contains(&p_paddr) {
-                let seg_end = p_paddr + p_filesz as u32;
+                let Some(seg_end) = p_paddr.checked_add(p_filesz as u32) else {
+                    return Err("ELF segment address overflow");
+                };
                 if p_paddr < min_addr {
                     min_addr = p_paddr;
                 }
@@ -320,12 +376,19 @@ pub fn extract_flash_from_elf(data: &[u8]) -> Result<Vec<u8>, &'static str> {
 
     let base = APP_FLASH_BASE_ADDR;
     let total_size = (max_addr - base) as usize;
+    if total_size > PACK_FILE_SIZE - PACK_HEADER_LEN {
+        return Err("ELF Flash image exceeds maximum .Pack container capacity");
+    }
     let mut flash_image = vec![0xFFu8; total_size];
 
     for (paddr, offset, filesz) in segments {
         let dst_start = (paddr - base) as usize;
-        let dst_end = dst_start + filesz;
-        let src_end = offset + filesz;
+        let Some(dst_end) = dst_start.checked_add(filesz) else {
+            return Err("ELF destination range overflow");
+        };
+        let Some(src_end) = offset.checked_add(filesz) else {
+            return Err("ELF file offset overflow");
+        };
         if src_end <= data.len() && dst_end <= flash_image.len() {
             flash_image[dst_start..dst_end].copy_from_slice(&data[offset..src_end]);
         }
@@ -431,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_15_factory_packs_universal_formulas() {
+    fn test_all_factory_packs_universal_formulas() {
         let search_dirs = ["blobs/firmware", "../blobs/firmware"];
         let mut found_count = 0;
 
@@ -489,6 +552,27 @@ mod tests {
                             path
                         );
 
+                        // 5. Verify target detection (DM01 vs DM02) and embedded 480B EEPROM extraction
+                        let expected_target = if *model_dir == "dm01" {
+                            MotorTarget::Dm01
+                        } else {
+                            MotorTarget::Dm02
+                        };
+                        assert_eq!(
+                            meta.target, expected_target,
+                            "Target detection mismatch for {:?}",
+                            path
+                        );
+                        let (_ee_off, ee) = EepromImage::find_in_payload(&payload)
+                            .unwrap_or_else(|| panic!("No valid 480B EEPROM found in {:?}", path));
+                        assert_eq!(ee.verify_all_blocks(), Ok(()));
+                        assert!(
+                            (6206..=6600).contains(&meta.firmware_version_number()),
+                            "Unexpected firmware version {} in {:?}",
+                            meta.firmware_version_number(),
+                            path
+                        );
+
                         found_count += 1;
                     }
                 }
@@ -497,8 +581,8 @@ mod tests {
 
         if found_count > 0 {
             assert!(
-                found_count >= 15,
-                "Expected at least 15 factory packs, found {}",
+                found_count >= 17,
+                "Expected at least 17 factory packs, found {}",
                 found_count
             );
         }

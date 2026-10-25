@@ -199,6 +199,9 @@ impl IntelHexFile {
         }
 
         let total_len = (max_addr - min_addr) as usize;
+        if total_len > 2 * 1024 * 1024 {
+            return Err(DisplayError::AddressOutOfBounds(max_addr));
+        }
         let mut buffer = vec![0xFFu8; total_len];
         for (addr, data) in data_recs {
             let offset = (addr - min_addr) as usize;
