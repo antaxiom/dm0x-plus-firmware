@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.3.0-beta.9] - 2026-10-25
+
 ### Added
 - **Reverse Engineering Analysis & Support for October 23, 2026 Factory Releases (DM01 & DM02 V6510C):**
   - **New Firmware Cataloging & Verification:**

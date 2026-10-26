@@ -1,0 +1,20 @@
+changelog:
+  categories:
+    - title: "🚀 Features & Architecture"
+      labels:
+        - "feat"
+        - "feature"
+        - "enhancement"
+    - title: "🐛 Fixes & Hardening"
+      labels:
+        - "fix"
+        - "bug"
+    - title: "📚 Documentation & Reverse Engineering"
+      labels:
+        - "docs"
+        - "documentation"
+    - title: "⚙️ CI & Tooling"
+      labels:
+        - "ci"
+        - "tooling"
+        - "chore"
