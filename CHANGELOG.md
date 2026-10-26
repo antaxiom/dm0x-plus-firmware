@@ -5,11 +5,14 @@ All notable changes to the **DM+ Open Firmware & Tooling Studio** project will b
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> [!NOTE]
+> All releases in the `0.3.x` development branch are designated **Experimental Alpha** releases (`v0.3.0-alpha.1` .. `v0.3.0-alpha.9`) to reflect the early-stage, bench-only reverse engineering and firmware bring-up status. Operating custom motor firmware on an actual bicycle is strictly prohibited.
+
 ---
 
 ## [Unreleased]
 
-## [v0.3.0-beta.9] - 2026-10-25
+## [v0.3.0-alpha.9] - 2026-10-25
 
 ### Added
 - **Reverse Engineering Analysis & Support for October 23, 2026 Factory Releases (DM01 & DM02 V6510C):**
@@ -41,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.8] - 2026-10-20
+## [v0.3.0-alpha.8] - 2026-10-20
 
 ### Added
 - **Automated Motor Self-Commissioning Engine (`calibration.rs`):**
@@ -82,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.7] - 2026-10-18
+## [v0.3.0-alpha.7] - 2026-10-18
 
 ### Added
 - Apple HIG-compliant branding assets (high-resolution `.icns`, `.ico`, `.png`) across all desktop GUI builds.
@@ -94,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.6] - 2026-10-18
+## [v0.3.0-alpha.6] - 2026-10-18
 
 ### Added
 - Windows `#![windows_subsystem = "windows"]` console suppression for clean GUI launching.
@@ -102,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.5] - 2026-10-18
+## [v0.3.0-alpha.5] - 2026-10-18
 
 ### Fixed
 - Fixed Win32 COM port discovery supporting `QueryDosDeviceW`, registry probing across 64-bit sign-extended values, and `CreateFileW` fallback across `COM1..COM32`.
@@ -110,7 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.4] - 2026-10-18
+## [v0.3.0-alpha.4] - 2026-10-18
 
 ### Added
 - Comprehensive hardware bring-up safety runbook ([`Documentation/Bench_Testing_Bringup_Guide.md`](Documentation/Bench_Testing_Bringup_Guide.md)) detailing current-limited bench power supply procedures.
@@ -118,7 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.3] - 2026-10-18
+## [v0.3.0-alpha.3] - 2026-10-18
 
 ### Added
 - Community-informed torque curve enhancements:
@@ -128,7 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.2] - 2026-10-18
+## [v0.3.0-alpha.2] - 2026-10-18
 
 ### Added
 - Embedded DM01 and DM02 open firmware containers directly in GUI assets.
@@ -136,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [v0.3.0-beta.1] - 2026-10-18
+## [v0.3.0-alpha.1] - 2026-10-18
 
 ### Added
 - Initial clean-room `#![no_std]` Rust recompilation of the ToSeven motor controller firmware (`dm01-firmware`).

@@ -307,6 +307,6 @@ jobs:
           body_path: ${{ steps.changelog.outputs.has_notes == 'true' && 'RELEASE_NOTES.md' || '' }}
           files: release-artifacts/*
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.event.inputs.tag_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.event.inputs.tag_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.event.inputs.tag_name, 'beta') }}
           generate_release_notes: true
 

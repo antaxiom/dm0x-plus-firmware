@@ -27,13 +27,13 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 > 2. **Factory Stock Firmware & Display Tools Are Fully Safe:**
 >    - Flashing official stock factory `.Pack` firmware containers (`TO7-DM01-*.Pack`, `TO7-DM02-*.Pack`) is verified safe and reversible.
 >    - Unlocking and flashing display firmware dumps (`T24V`, `T154`, `LCD135C`, `M15`) is verified safe and operates over direct USB CDC ISP without touching the motor controller.
-> 3. **Bench Power Safety Rules:**
+> 3. **Bench Power Safety Rules & Alpha Testing Scope:**
 >    - Never flash or test controllers using a high-discharge lithium bicycle battery. Always clamp an adjustable DC bench power supply to <= 1.0 A at 48 V.
->    - Operating custom open motor firmware on an actual bicycle is strictly prohibited at this stage.
+>    - All `0.3.x` releases (`v0.3.0-alpha.1` .. `v0.3.0-alpha.9`) are strictly **Experimental Alpha** software for bench bring-up, reverse engineering, and hardware triage. Operating custom open motor firmware on an actual bicycle is strictly prohibited at this stage.
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-beta.8` - Release Beta)
+## What Is Implemented Right Now (`v0.3.0-alpha.9` - Experimental Alpha)
 
 Here is the verified functionality available in this repository:
 
