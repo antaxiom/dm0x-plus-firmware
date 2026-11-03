@@ -7,6 +7,7 @@
 slint::include_modules!();
 
 use dm01_firmware::display_patcher::{inspect_display, patch_display, IntelHexFile, LockoutStatus};
+use dm01_firmware::eeprom::{EepromImage, StreetLegalMode, EEPROM_TOTAL_LEN};
 use dm01_firmware::flasher::FlasherError;
 use dm01_firmware::pack::{decrypt_payload, parse_pack_metadata, PACK_FILE_SIZE};
 use dm01_firmware::serial::{
@@ -513,13 +514,14 @@ fn main() -> Result<(), slint::PlatformError> {
     // Callback: Flash Motor (Handles both Dry-Run and Live Hardware Flash in a background thread)
     let handle_weak = main_window.as_weak();
     main_window.on_flash_motor(
-        move |source_str, custom_path_str, target_str, street_legal_str, port_str, is_dry_run, max_amps, battery_volts| {
+        move |source_str, custom_path_str, target_str, street_legal_str, port_str, is_dry_run, max_amps, battery_volts, battery_resistance_mohm| {
             if let Some(ui) = handle_weak.upgrade() {
                 let port = port_str.as_str().trim().to_string();
                 let source = source_str.as_str().to_string();
                 let custom_path = custom_path_str.as_str().to_string();
                 let compliance_label = street_legal_str.as_str().to_string();
                 let battery_label = format!("{}V", battery_volts);
+                let res_mohm = battery_resistance_mohm.max(0) as u16;
                 let is_dm02 = target_str.contains("DM02");
                 let max_ceiling = if is_dm02 { 20 } else { 32 };
                 let clamped_amps = max_amps.min(max_ceiling).max(5);
@@ -558,16 +560,32 @@ fn main() -> Result<(), slint::PlatformError> {
                     return;
                 }
 
+                // If payload contains an embedded EEPROM configuration image, customize it at flash time
+                if let Some((ee_off, mut ee)) = EepromImage::find_in_payload(&payload) {
+                    let mut custom = ee.custom_config().unwrap_or_default();
+                    custom.battery_resistance_mohm = res_mohm;
+                    custom.street_legal_mode = match compliance_label.as_str() {
+                        s if s.contains("Permanent") => StreetLegalMode::PermanentLock,
+                        s if s.contains("Default") => StreetLegalMode::StreetLegalDefault,
+                        _ => StreetLegalMode::Unrestricted,
+                    };
+                    ee.set_custom_config(&custom);
+                    payload[ee_off..ee_off + EEPROM_TOTAL_LEN].copy_from_slice(&ee.raw);
+                }
+
                 let customer_num = meta.customer_num();
+                let calculated_checksum = payload
+                    .iter()
+                    .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
                 let wakeup_pkt = dm01_firmware::flasher::build_wakeup_packet(
                     payload.len() as u32,
-                    meta.payload_checksum,
+                    calculated_checksum,
                     meta.uart_mask,
                     customer_num,
                 );
                 let header_pkt = dm01_firmware::flasher::build_header_packet(
                     payload.len() as u32,
-                    meta.payload_checksum,
+                    calculated_checksum,
                     meta.uart_mask,
                     0,
                 );
@@ -583,12 +601,13 @@ fn main() -> Result<(), slint::PlatformError> {
                     if is_dry_run {
                         // Validated Dry-Run Execution using real wakeup/header packets and payload metadata
                         let summary_msg = format!(
-                            "Dry-Run complete: {:?} ({}B, {}A limit, {}, {}) verified (Wakeup {:02X}{:02X}, Header {:02X}{:02X}).",
+                            "Dry-Run complete: {:?} ({}B, {}A limit, {}, {}, {} mΩ IR) verified (Wakeup {:02X}{:02X}, Header {:02X}{:02X}).",
                             meta.target,
                             payload.len(),
                             clamped_amps,
                             battery_label,
                             compliance_label,
+                            res_mohm,
                             wakeup_pkt[0],
                             wakeup_pkt[1],
                             header_pkt[0],

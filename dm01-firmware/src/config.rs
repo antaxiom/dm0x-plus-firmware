@@ -296,6 +296,10 @@ pub struct MotorConfig {
 
     /// Street-legal compliance mode.
     pub street_legal_mode: crate::eeprom::StreetLegalMode,
+
+    /// Battery internal pack resistance in milliohms for EggRider-grade voltage sag compensation (default: `150 mΩ`).
+    /// If 0, dynamic sag compensation is disabled.
+    pub battery_resistance_mohm: u16,
 }
 
 impl Default for MotorConfig {
@@ -426,6 +430,7 @@ impl MotorConfig {
             } else {
                 crate::eeprom::StreetLegalMode::Unrestricted
             },
+            battery_resistance_mohm: 150,
         }
     }
 
@@ -487,6 +492,7 @@ impl MotorConfig {
             } else {
                 self.street_legal_mode = custom.street_legal_mode;
             }
+            self.battery_resistance_mohm = custom.battery_resistance_mohm;
         }
     }
 

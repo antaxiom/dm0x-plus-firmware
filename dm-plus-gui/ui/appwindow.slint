@@ -63,7 +63,7 @@ export component MainWindow inherits Window {
     // Callbacks to Rust backend
     callback refresh-ports();
     callback browse-motor-pack();
-    callback flash-motor(string, string, string, string, string, bool, int, int);
+    callback flash-motor(string, string, string, string, string, bool, int, int, int);
     callback browse-display-hex();
     callback browse-display-output-hex();
     callback inspect-display-hex(string);
@@ -83,6 +83,7 @@ export component MainWindow inherits Window {
     in-out property <string> motor-target: "DM01 (External 12-FET)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
     in-out property <float> max-current-a: 30.0;
+    in-out property <float> battery-resistance-mohm: 150.0;
     in-out property <string> street-legal-mode: "Unrestricted / Off-Road (Configurable)";
     in-out property <bool> motor-is-flashing: false;
     in-out property <float> motor-progress: 0.0;
@@ -554,6 +555,37 @@ export component MainWindow inherits Window {
 
                             VerticalLayout {
                                 spacing: 4px;
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: "Battery Sag Compensation (IR)";
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
+                                    }
+                                    Text {
+                                        text: root.battery-resistance-mohm == 0 ? "0 mΩ (Disabled / Raw)" : "\{Math.round(root.battery-resistance-mohm)} mΩ (EggRider)";
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : (
+                                            root.battery-resistance-mohm == 0 ? #9a9996 : #3584e4
+                                        );
+                                    }
+                                }
+                                Slider {
+                                    minimum: 0;
+                                    maximum: 350;
+                                    value <=> root.battery-resistance-mohm;
+                                    enabled: root.motor-firmware-source != "Custom .Pack File (Manual Selection)";
+                                    changed(val) => {
+                                        let rounded = Math.round(val / 5) * 5;
+                                        root.battery-resistance-mohm = Math.min(Math.max(rounded, 0), 350);
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
                                 Text {
                                     text: "Active Hardware Protections";
                                     font-size: 13px;
@@ -653,7 +685,8 @@ export component MainWindow inherits Window {
                                             root.selected-motor-port,
                                             true, // dry_run
                                             Math.round(root.max-current-a),
-                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
+                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48),
+                                            Math.round(root.battery-resistance-mohm)
                                         );
                                     }
                                 }
@@ -671,7 +704,8 @@ export component MainWindow inherits Window {
                                             root.selected-motor-port,
                                             false, // live flash
                                             Math.round(root.max-current-a),
-                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48)
+                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48),
+                                            Math.round(root.battery-resistance-mohm)
                                         );
                                     }
                                 }

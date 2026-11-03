@@ -398,6 +398,7 @@ impl EepromImage {
         let off = DM_PLUS_CUSTOM_CONFIG_OFFSET;
         if self.raw[off] == DM_PLUS_CUSTOM_MAGIC[0] && self.raw[off + 1] == DM_PLUS_CUSTOM_MAGIC[1]
         {
+            let res_mohm = u16::from_le_bytes([self.raw[off + 8], self.raw[off + 9]]);
             Some(DmPlusCustomConfig {
                 tuning_profile: self.raw[off + 2],
                 ceiling_policy: self.raw[off + 3],
@@ -405,6 +406,7 @@ impl EepromImage {
                 lvc_cushion_deci_v: self.raw[off + 5],
                 thermal_rollback_start_c: self.raw[off + 6],
                 street_legal_mode: StreetLegalMode::from_u8(self.raw[off + 7]),
+                battery_resistance_mohm: if res_mohm == 0xFFFF { 150 } else { res_mohm },
             })
         } else {
             None
@@ -423,8 +425,11 @@ impl EepromImage {
         self.raw[off + 5] = cfg.lvc_cushion_deci_v;
         self.raw[off + 6] = cfg.thermal_rollback_start_c;
         self.raw[off + 7] = cfg.street_legal_mode as u8;
-        // Zero reserved bytes [off+8..off+16]
-        let mut r = off + 8;
+        let res_bytes = cfg.battery_resistance_mohm.to_le_bytes();
+        self.raw[off + 8] = res_bytes[0];
+        self.raw[off + 9] = res_bytes[1];
+        // Zero reserved bytes [off+10..off+16]
+        let mut r = off + 10;
         while r < off + 16 {
             self.raw[r] = 0;
             r += 1;
@@ -487,6 +492,9 @@ pub struct DmPlusCustomConfig {
     pub thermal_rollback_start_c: u8,
     /// Street-legal compliance mode.
     pub street_legal_mode: StreetLegalMode,
+    /// Battery internal pack resistance in milliohms for EggRider-grade voltage sag compensation (default: 150 mΩ).
+    /// If 0, dynamic sag compensation is disabled.
+    pub battery_resistance_mohm: u16,
 }
 
 impl Default for DmPlusCustomConfig {
@@ -498,6 +506,7 @@ impl Default for DmPlusCustomConfig {
             lvc_cushion_deci_v: 30, // 3.0V
             thermal_rollback_start_c: 70,
             street_legal_mode: StreetLegalMode::Unrestricted,
+            battery_resistance_mohm: 150,
         }
     }
 }
@@ -553,6 +562,7 @@ mod tests {
             lvc_cushion_deci_v: 30,
             thermal_rollback_start_c: 72,
             street_legal_mode: StreetLegalMode::PermanentLock,
+            battery_resistance_mohm: 185,
         };
         dm01.set_custom_config(&custom);
         assert_eq!(dm01.verify_all_blocks(), Ok(()));

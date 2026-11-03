@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **EggRider-Grade Battery Voltage Sag Compensation (IR) & Hybrid Smoothing:**
+  - Implemented dynamic internal resistance voltage sag cancellation in `BatteryMonitor` (`V_est_ocv = V_terminal + (I_load * R_pack) / 1000`), eliminating instantaneous 2V–5V voltage drops and preventing battery percentage yo-yoing under throttle and cadence acceleration.
+  - Paired IR compensation with a light $\tau \approx 1.02\text{ s}$ Exponential Moving Average ($\alpha = 1/1024$ at 1 kHz) to filter inverter switching current ripple and electrochemical diffusion relaxation over $\approx 3\text{ seconds}$ without sluggish display lag.
+  - Maintained physical terminal voltage monitoring on the 500 ms Low-Voltage Cutoff (LVC) debounce to safeguard battery cells from undervoltage.
+  - Persisted `battery_resistance_mohm: u16` (default 150 mΩ) in Block 1 EEPROM zero padding (`0x04A + 8..10`) with automatic 16-entry CRC-16 recalculation.
+  - Added *Battery Sag Compensation (IR)* slider (0–350 mΩ) to the DM+ Desktop Studio (`dm-plus-gui`), enabling flash-time EEPROM configuration and automated container checksum updates.
+  - Embedded factory EEPROM images directly into bare-metal `dm01_firmware` and `dm02_firmware` Flash payloads, enabling automated self-commissioning on blank or unformatted MCU Flash Page 127.
+
+
 ## [v0.3.0-alpha.9] - 2026-10-25
 
 ### Added

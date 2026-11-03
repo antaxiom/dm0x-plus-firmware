@@ -84,6 +84,11 @@ pub static VECTOR_TABLE: [Vector; 16] = [
     }, // SysTick
 ];
 
+/// Embedded factory EEPROM image matching ToSeven TS1000W layout.
+#[used]
+static DEFAULT_EEPROM_IMAGE: dm01_firmware::eeprom::EepromImage =
+    dm01_firmware::eeprom::EepromImage::default_dm01();
+
 /// Copies `.data` from Flash to SRAM and zeroes `.bss` before running any Rust code.
 #[inline(always)]
 unsafe fn init_ram() {
@@ -139,13 +144,31 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
 
     // 6. Initialize Motor Controller State Machine (load from Flash Page 127 if available)
     let mut config = MotorConfig::default_dm01();
-    if let Some(flash_img) = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() } {
-        config.apply_eeprom_image(&flash_img);
+    let flash_img = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() };
+    if let Some(ref img) = flash_img {
+        config.apply_eeprom_image(img);
+    } else {
+        config.apply_eeprom_image(&DEFAULT_EEPROM_IMAGE);
+    }
+    // If Flash Page 127 does not contain custom DM+ config, inherit from embedded image
+    if flash_img
+        .as_ref()
+        .and_then(|img| img.custom_config())
+        .is_none()
+    {
+        if let Some(custom) = DEFAULT_EEPROM_IMAGE.custom_config() {
+            config.battery_resistance_mohm = custom.battery_resistance_mohm;
+            config.street_legal_mode = custom.street_legal_mode;
+        }
     }
     sensors.configure_from_motor_config(&config);
     let angle_offset_deg = config.motor_hw.angle_offset_deg;
     let foc_cfg = config.foc_config;
-    let mut battery_monitor = BatteryMonitor::new(BatteryPreset::V48, config.nominal_voltage_mv);
+    let mut battery_monitor = BatteryMonitor::with_resistance(
+        BatteryPreset::V48,
+        config.nominal_voltage_mv,
+        config.battery_resistance_mohm,
+    );
     let mut fault_detector = FaultDetector::new();
     let mut controller = Dm01Controller::with_tuning(
         config,
@@ -222,6 +245,7 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
             let soc_pct = battery_monitor.update(
                 inputs.battery_voltage_mv,
                 controller.config.low_cut_voltage_mv,
+                current_target_ma.max(0) as u32,
                 1,
             );
             let _ = fault_detector.step_startup_calibration(
