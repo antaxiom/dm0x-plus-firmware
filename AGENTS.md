@@ -81,7 +81,7 @@ This repository is a reverse-engineering, documentation, and `#![no_std]` Embedd
 3. **High-Voltage Constant-Power Cap (Above `50.0 V`):**
    - Scales maximum current by $50.0\text{ V} / V_{\text{battery}}$ above `50.0 V` so peak electrical power stays constant ($1500\text{ W}$ in Sport Mode).
 4. **Torque Sensor Curve:**
-   - Tracks resting `ZeroVol` thermal drift via a 5-sample delta window (`< 20 mV` over 50 idle cycles) and updates `ZeroVol` with a `4:1` weighted average inside `400..1000 mV`.
+   - Tracks resting `ZeroVol` thermal drift via a 5-sample delta window (`< 20 mV` over 50 idle cycles clamped to $[400, 1300]\text{ mV}$ and squeezed into dynamic $\pm 200\text{ mV}$ band) with 5-deep start-stop cycle history mean and single-shot latch lockout per stop.
    - Applies configurable IIR smoothing ($F = \min(20 \times \text{Filter}, 200)$), normalizes effort above `50 mV`, multiplies by $\min(3 \times \text{StrengthValue}, 30) \times \text{EAssist\%} / 1000$ (capped at `100%`), adds `CurrentOffset` (`0.5 A`), and scales linearly by crank cadence relative to **`60 RPM`** ($\max(\text{Cadence}, 5) / 60$), clamped to the **Global Mode Ceiling**.
 5. **Arbitration, Smooth Ramping, Speed Soft-Taper & LVC Reserve Cushion:**
    - Selects $\max(\text{Torque}, \text{PAS}, \text{Throttle})$ when pedaling forward, ramps current at `±0.2 A/tick`, linearly tapers current across a `1.5 km/h` window below the speed limit, and linearly tapers current down to `25%` across a `3.0 V` reserve cushion above Low-Voltage Cutoff (`LVC`).

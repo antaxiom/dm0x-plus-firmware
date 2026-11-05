@@ -102,8 +102,10 @@ The controller converts your pedal pressure into motor current in **five steps**
 
 ### Step 1: Automatic Zero-Point Drift Tracking
 Metal strain gauges drift slightly as the motor case warms up. To prevent "ghost pedaling" (where the motor pushes on its own) or sluggish response:
-- Whenever you stop pedaling (`0 RPM`) and the pedal voltage stays completely steady (varying by less than `20 mV` across 5 consecutive readings over 50 cycles) inside a safe window (`400 mV` to `1000 mV`), the controller gently updates its resting zero point:
-  $$\text{New ZeroVol} = 80\% \times \text{Old ZeroVol} + 20\% \times \text{Measured Resting Voltage}$$
+- Whenever you stop pedaling (`0 RPM`) and the pedal voltage stays steady (varying by less than `20 mV` across 5 consecutive readings over 50 quiet cycles) inside a safe window (`400 mV` to `1300 mV`), the controller samples are clamped into a dynamic $\pm 200\text{ mV}$ band around the active baseline.
+- The 50-tick average forms a new entry in a 5-deep start-stop cycle history, with $\text{ZeroVol}$ computed as the 5-cycle mean:
+  $$\text{New ZeroVol} = \frac{1}{5} \sum_{i=0}^{4} \text{CycleZero}_i$$
+- **Single-Shot Latch Per Stop:** The update executes exactly once per stop; tracking locks out until crank rotation (`Cadence > 0`) is observed again. This prevents resting foot pressure during long stops (e.g. at traffic lights) from continuously corrupting the zero baseline.
 
 ### Step 2: Pedal Force Smoothing (`Filter`) and Deadband (`StartupVol`)
 1. The controller subtracts the resting zero point from the live sensor reading to get your **Net Pedal Voltage**:

@@ -129,8 +129,12 @@ pub const fn compute_level_power_ceiling_da(
 ///
 /// Implements:
 /// 1. 12-bit ADC (`0..4095`) to millivolt (`0..3300 mV`) conversion.
-/// 2. 5-sample moving delta window (`0x08009034`) for automatic resting `ZeroVol` thermal drift tracking
-///    (`4:1` weighted average update when unloaded within `400..1000 mV` for 50 consecutive quiet ticks).
+/// 2. 5-sample moving delta window (`0x08009034`) for automatic resting `ZeroVol` thermal drift tracking.
+///    Samples are clamped to `[400 mV, 1300 mV]`, then squeezed into `[zero_vol_mv − 200 mV,
+///    zero_vol_mv + 200 mV]`, and accumulated over 50 consecutive quiet ticks. The resulting
+///    average becomes one entry in a 5-deep start-stop cycle history; `ZeroVolMv` is the mean
+///    of that history clamped to `[400 mV, 1300 mV]`. A cycle completes only once per start-stop
+///    sequence: tracking is disabled after an update and re-armed when cadence returns above zero.
 /// 3. Configurable IIR pedal force smoothing filter (`F = min(20 * filter_setting, 200)`).
 /// 4. `StrengthValue * EAssist[level]` amplification and `CurrentOffset` starting kick.
 /// 5. Linear cadence scaling relative to `60 RPM` (`max(cadence_rpm, 5) / 60`), clamped to `global_mode_ceiling_da`.
@@ -149,7 +153,15 @@ pub struct TorqueSensorState {
     /// Ring buffer of the last 5 raw pedal voltage readings (in mV) for drift detection.
     history_mv: [u16; 5],
     history_idx: usize,
+    /// Number of samples accumulated in the current quiet window (start-stop cycle).
     quiet_ticks: u16,
+    /// History of per-cycle averaged `ZeroVolMv` values from the last 5 start-stop cycles.
+    /// `history_zero_volt[0]` is the newest entry.
+    history_zero_volt: [u16; 5],
+    /// Running sum of `clamped_pedal_mv` samples within the current quiet window.
+    sum_pedal_mv: u32,
+    /// Set after a cycle update completes; re-armed when `cadence_rpm > 0` is observed.
+    zero_volt_tracking_disabled: bool,
 }
 
 impl TorqueSensorState {
@@ -163,6 +175,11 @@ impl TorqueSensorState {
             history_mv: [zero_vol_mv; 5],
             history_idx: 0,
             quiet_ticks: 0,
+            // Seed the cycle history with the initial zero so the very first
+            // completed cycle averages against a sensible baseline instead of zeros.
+            history_zero_volt: [zero_vol_mv; 5],
+            sum_pedal_mv: 0,
+            zero_volt_tracking_disabled: false,
         }
     }
 
@@ -208,17 +225,65 @@ impl TorqueSensorState {
         }
         let max_delta = max_v - min_v;
 
-        // 2. Dynamic zero-point drift tracking when cranks are stationary (0 RPM)
-        // and signal is steady (delta < 20 mV) within the safe [400 mV, 1000 mV] window.
-        if cadence_rpm == 0 && max_delta < 20 && (400..=1000).contains(&pedal_mv) {
-            self.quiet_ticks = self.quiet_ticks.saturating_add(1);
-            if self.quiet_ticks >= 50 {
-                // 4:1 weighted IIR update: floor((4 * old_zero + new_sample) / 5)
-                self.zero_vol_mv = (((self.zero_vol_mv as u32) * 4 + (pedal_mv as u32)) / 5) as u16;
+        // 2. Adaptive zero-point drift tracking (only while cranks are stationary).
+        //
+        // While `cadence_rpm == 0` and the signal is stable (delta < 20 mV), each pedal
+        // sample is clamped to a hard global window `[400 mV, 1300 mV]`, then further
+        // squeezed into a tighter dynamic band `[zero_vol_mv − 200 mV, zero_vol_mv + 200 mV]`
+        // around the current zero estimate. This biases any outlier samples toward the
+        // most recent baseline instead of letting them drag the accumulated average.
+        //
+        // Once 50 quiet ticks are collected, their average becomes one entry in the
+        // 5-deep start-stop cycle history. `ZeroVolMv` is recomputed as the mean of
+        // that history and clamped back into `[400 mV, 1300 mV]`. Tracking is then
+        // disabled until the cranks move again, preventing a single long stop from
+        // continuously dragging the zero point.
+        if cadence_rpm == 0 {
+            if !self.zero_volt_tracking_disabled && max_delta < 20 {
+                if self.quiet_ticks < u16::MAX {
+                    let mut clamped_pedal_mv: u32 = pedal_mv as u32;
+                    // Hard global limits on any accepted sample.
+                    clamped_pedal_mv = clamped_pedal_mv.clamp(400, 1300);
+                    // Tighter dynamic band around the current zero estimate.
+                    let upper = self.zero_vol_mv as u32 + 200;
+                    let lower = (self.zero_vol_mv as u32).saturating_sub(200);
+                    clamped_pedal_mv = clamped_pedal_mv.min(upper).max(lower);
+
+                    self.sum_pedal_mv += clamped_pedal_mv;
+                    self.quiet_ticks += 1;
+                }
+
+                if self.quiet_ticks >= 50 {
+                    // Shift the cycle history right by one (evicts the oldest entry).
+                    for j in (1..5).rev() {
+                        self.history_zero_volt[j] = self.history_zero_volt[j - 1];
+                    }
+                    // Insert this cycle's average as the newest entry.
+                    self.history_zero_volt[0] = (self.sum_pedal_mv / 50) as u16;
+
+                    // Mean of the last 5 start-stop cycles becomes the new resting zero.
+                    let mut sum_zero = 0u32;
+                    for j in 0..5 {
+                        sum_zero += self.history_zero_volt[j] as u32;
+                    }
+                    // Hard global clamp on the recomputed zero.
+                    self.zero_vol_mv = (sum_zero / 5).clamp(400, 1300) as u16;
+
+                    // Reset accumulators and lock tracking until cranks move again.
+                    self.sum_pedal_mv = 0;
+                    self.quiet_ticks = 0;
+                    self.zero_volt_tracking_disabled = true;
+                }
+            } else {
+                // Signal too noisy or tracking already completed for this stop: reset.
+                self.sum_pedal_mv = 0;
                 self.quiet_ticks = 0;
             }
         } else {
+            // Cranks are moving: reset accumulators and re-arm tracking for the next stop.
+            self.sum_pedal_mv = 0;
             self.quiet_ticks = 0;
+            self.zero_volt_tracking_disabled = false;
         }
 
         // 3. Net pedal voltage and configurable IIR low-pass filter
@@ -705,8 +770,82 @@ mod tests {
         for _ in 0..54 {
             ts.update_voltage(750, 0, 5);
         }
-        // 4:1 weighted update: (4 * 700 + 750) / 5 = 710 mV
+        // Cycle 1: 50 quiet ticks × 750 mV → history_zero_volt = [750, 700, 700, 700, 700]
+        // ZeroVolMv = (750 + 4 × 700) / 5 = 710 mV
         assert_eq!(ts.zero_vol_mv, 710);
+    }
+
+    #[test]
+    fn test_zero_tracking_clamps_sample_into_dynamic_band() {
+        // Zero starts at 700 mV. Dynamic band is [500, 900].
+        // Feed 1200 mV: hard clamp keeps 1200, dynamic min(1200, 900) = 900.
+        let mut ts = TorqueSensorState::new(700, 3300, 50);
+        for _ in 0..54 {
+            ts.update_voltage(1200, 0, 0);
+        }
+        // Every sample clamped to 900 mV → history[0] = 900
+        // New zero = (900 + 700*4) / 5 = 740
+        assert_eq!(ts.zero_vol_mv, 740);
+    }
+
+    #[test]
+    fn test_zero_tracking_pulls_low_outlier_upward() {
+        // Zero starts at 700 mV. Dynamic band is [500, 900].
+        // Feed 300 mV → hard clamp → 400 mV → dynamic max(400, 500) = 500 mV.
+        let mut ts = TorqueSensorState::new(700, 3300, 50);
+        for _ in 0..54 {
+            ts.update_voltage(300, 0, 0);
+        }
+        // Every sample clamped to 500 mV → history[0] = 500
+        // New zero = (500 + 700*4) / 5 = 660
+        assert_eq!(ts.zero_vol_mv, 660);
+    }
+
+    #[test]
+    fn test_zero_volt_result_is_hard_clamped() {
+        // Zero starts at 1300 mV (upper limit). Dynamic band is [1100, 1500].
+        // Feed 1400 mV: hard clamped to 1300 mV each cycle, stays at 1300.
+        let mut ts = TorqueSensorState::new(1300, 3300, 50);
+        for _ in 0..5 {
+            for _ in 0..54 {
+                ts.update_voltage(1400, 0, 0);
+            }
+            // Cadence > 0 re-arms for the next stop
+            ts.update_voltage(1400, 60, 0);
+        }
+        assert_eq!(ts.zero_vol_mv, 1300);
+        assert!(ts.zero_vol_mv <= 1300);
+        assert!(ts.zero_vol_mv >= 400);
+    }
+
+    #[test]
+    fn test_zero_tracking_latches_once_per_stop() {
+        let mut ts = TorqueSensorState::new(700, 3300, 50);
+
+        // 1. First stop: 54 ticks at 750 mV completes 1 cycle
+        for _ in 0..54 {
+            ts.update_voltage(750, 0, 0);
+        }
+        assert_eq!(ts.zero_vol_mv, 710);
+
+        // 2. Continuous sitting at red light: another 100 ticks without moving cranks
+        for _ in 0..100 {
+            ts.update_voltage(750, 0, 0);
+        }
+        // Remains 710 mV because tracking latches off until cranks move!
+        assert_eq!(ts.zero_vol_mv, 710);
+
+        // 3. Cranks move (cadence > 0) -> re-arms tracking
+        for _ in 0..5 {
+            ts.update_voltage(750, 60, 0);
+        }
+
+        // 4. Second stop: 54 ticks at 750 mV updates cycle 2
+        for _ in 0..54 {
+            ts.update_voltage(750, 0, 0);
+        }
+        // history = [750, 750, 700, 700, 700], mean = 3600 / 5 = 720 mV
+        assert_eq!(ts.zero_vol_mv, 720);
     }
 
     #[test]

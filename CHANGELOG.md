@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Adaptive Zero-Point Torque Drift Tracking & Red Light Drift Lockout:**
+  - Implemented decompiled `V6510C` (`0x08009034`) adaptive `ZeroVol` baseline drift tracking in `power_curve.rs`: samples during stationary stops (`cadence == 0`, `max_delta < 20 mV`) are hard-clamped to $[400\text{ mV},\; 1300\text{ mV}]$ and squeezed into a dynamic $\pm 200\text{ mV}$ band around the active baseline.
+  - Added a 5-deep start-stop cycle history (`history_zero_volt: [u16; 5]`) updated with the 50-tick quiet sample average on each stop, computing `zero_vol_mv` as the 5-cycle mean clamped to $[400\text{ mV},\; 1300\text{ mV}]$.
+  - Added single-shot cycle latch lockout (`zero_volt_tracking_disabled: bool`) that disables further tracking during an ongoing stop until crank movement (`cadence > 0`) is observed, eliminating the "Red Light Drift" bug where resting foot weight corrupts the resting baseline during long stops.
+  - Added comprehensive unit tests verifying dynamic banding, low outlier upward pull, hard boundary clamping, and single-shot latch lockout.
 - **EggRider-Grade Battery Voltage Sag Compensation (IR) & Hybrid Smoothing:**
   - Implemented dynamic internal resistance voltage sag cancellation in `BatteryMonitor` (`V_est_ocv = V_terminal + (I_load * R_pack) / 1000`), eliminating instantaneous 2V–5V voltage drops and preventing battery percentage yo-yoing under throttle and cadence acceleration.
   - Paired IR compensation with a light $\tau \approx 1.02\text{ s}$ Exponential Moving Average ($\alpha = 1/1024$ at 1 kHz) to filter inverter switching current ripple and electrochemical diffusion relaxation over $\approx 3\text{ seconds}$ without sluggish display lag.
