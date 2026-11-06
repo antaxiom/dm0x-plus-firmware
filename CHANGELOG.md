@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Chemistry-Accurate Li-ion OCV Calibration Curves & Wh Scaling:**
+  - Replaced naive linear battery calibration tables in `battery.rs` with exact Lithium-Ion (NMC/NCA) open-circuit voltage curves (`[3.15V, 3.45V, 3.65V, 3.85V, 4.00V, 4.15V]` per cell) across 36V (10S), 48V (13S), and 52V (14S).
+  - Aligned 0% capacity threshold at 3.15 V/cell (40.95V on 48V packs), matching the controller's factory 41.0V Low-Voltage Cutoff (LVC) to prevent power cutoff while capacity remains indicated on display.
+  - Added explicit hardware warning documentation to `BatteryPreset::V60` (deprecating nominal 60V due to 80V MOSFET breakdown under switching spikes) and `BatteryPreset::V72` (strictly unsupported due to 63V/80V component overvoltage destruction).
 - **Adaptive Zero-Point Torque Drift Tracking & Red Light Drift Lockout:**
   - Implemented decompiled `V6510C` (`0x08009034`) adaptive `ZeroVol` baseline drift tracking in `power_curve.rs`: samples during stationary stops (`cadence == 0`, `max_delta < 20 mV`) are hard-clamped to $[400\text{ mV},\; 1300\text{ mV}]$ and squeezed into a dynamic $\pm 200\text{ mV}$ band around the active baseline.
   - Added a 5-deep start-stop cycle history (`history_zero_volt: [u16; 5]`) updated with the 50-tick quiet sample average on each stop, computing `zero_vol_mv` as the 5-cycle mean clamped to $[400\text{ mV},\; 1300\text{ mV}]$.

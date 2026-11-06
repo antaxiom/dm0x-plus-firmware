@@ -8,16 +8,32 @@ use crate::power_curve::apply_lvc_cushion_da;
 /// Standard nominal battery voltage presets supported by the display and controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatteryPreset {
+    /// 36V nominal (10S Li-ion, 42.0V peak, 31.5V empty).
     V36,
+    /// 48V nominal (13S Li-ion, 54.6V peak, 40.95V empty). Default for DM01/DM02.
     V48,
+    /// 52V nominal (14S Li-ion, 58.8V peak, 44.1V empty).
     V52,
+    /// 60V nominal (16S Li-ion, 67.2V peak, 50.4V empty).
+    ///
+    /// # Hardware Warning
+    /// Deprecated on stock DM01/DM02 hardware. While controller casings were originally marked "24-60V",
+    /// 60V refers to the maximum operating ceiling (< 60V peak, i.e. 52V pack). A true 60V pack (67.2V peak)
+    /// causes high-side/low-side MOSFET avalanche breakdown under high-current PWM switching inductive spikes.
     V60,
+    /// 72V nominal (20S Li-ion, 84.0V peak, 63.0V empty).
+    ///
+    /// # Hardware Warning
+    /// Strictly unsupported on stock DM01/DM02 hardware. Peak charging voltage (84.0V) instantly exceeds
+    /// the 63V/80V bulk capacitor ratings and 80V MOSFET breakdown voltage, causing immediate catastrophic failure.
     V72,
+    /// Custom user-defined voltage profile (defaults to 48V curve).
     Custom,
 }
 
 /// 6-point voltage-to-SoC calibration curve in millivolts (`[0%, 20%, 40%, 60%, 80%, 100%]`).
-/// Matches the hidden battery calibration table in the ToSeven Display Settings menu.
+/// Maps resting open-circuit voltage (OCV) to consumed Watt-hour capacity based on standard
+/// Lithium-Ion (NMC/NCA) cell chemistry discharge curves (`[3.15V, 3.45V, 3.65V, 3.85V, 4.00V, 4.15V]` per cell).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryCalibrationCurve {
     /// Voltage thresholds in millivolts for `[0%, 20%, 40%, 60%, 80%, 100%]`.
@@ -25,23 +41,31 @@ pub struct BatteryCalibrationCurve {
 }
 
 impl BatteryCalibrationCurve {
-    /// Returns the documented linear voltage calibration table for a given battery preset.
+    /// Returns the chemistry-accurate Li-ion OCV calibration table for a given battery preset.
+    ///
+    /// Each curve scales proportionally with consumed Watt-hours across the NMC/NCA discharge plateau:
+    /// - `0%`: 3.15 V/cell (safe reserve floor matching controller 41.0V LVC)
+    /// - `20%`: 3.45 V/cell (onset of steep waterfall knee)
+    /// - `40%`: 3.65 V/cell (lower nominal plateau)
+    /// - `60%`: 3.85 V/cell (upper nominal plateau)
+    /// - `80%`: 4.00 V/cell
+    /// - `100%`: 4.15 V/cell (resting full charge float)
     pub const fn from_preset(preset: BatteryPreset) -> Self {
         match preset {
             BatteryPreset::V36 => Self {
-                points_mv: [30_000, 32_200, 34_400, 36_600, 38_800, 41_000],
+                points_mv: [31_500, 34_500, 36_500, 38_500, 40_000, 41_500],
             },
             BatteryPreset::V48 | BatteryPreset::Custom => Self {
-                points_mv: [39_000, 41_900, 44_700, 47_600, 50_400, 53_300],
+                points_mv: [40_950, 44_850, 47_450, 50_050, 52_000, 53_950],
             },
             BatteryPreset::V52 => Self {
-                points_mv: [42_000, 45_100, 48_200, 51_200, 54_300, 57_400],
+                points_mv: [44_100, 48_300, 51_100, 53_900, 56_000, 58_100],
             },
             BatteryPreset::V60 => Self {
-                points_mv: [48_000, 51_500, 55_000, 58_600, 62_100, 65_600],
+                points_mv: [50_400, 55_200, 58_400, 61_600, 64_000, 66_400],
             },
             BatteryPreset::V72 => Self {
-                points_mv: [62_000, 66_000, 70_000, 74_000, 78_000, 82_000],
+                points_mv: [63_000, 69_000, 73_000, 77_000, 80_000, 83_000],
             },
         }
     }
@@ -165,10 +189,12 @@ mod tests {
     #[test]
     fn test_48v_soc_interpolation() {
         let curve = BatteryCalibrationCurve::from_preset(BatteryPreset::V48);
-        assert_eq!(curve.state_of_charge_percent(38_500), 0);
-        assert_eq!(curve.state_of_charge_percent(39_000), 0);
-        assert_eq!(curve.state_of_charge_percent(47_600), 60);
-        assert_eq!(curve.state_of_charge_percent(53_300), 100);
+        assert_eq!(curve.state_of_charge_percent(40_000), 0);
+        assert_eq!(curve.state_of_charge_percent(40_950), 0);
+        assert_eq!(curve.state_of_charge_percent(47_450), 40);
+        assert_eq!(curve.state_of_charge_percent(50_050), 60);
+        assert_eq!(curve.state_of_charge_percent(52_000), 80);
+        assert_eq!(curve.state_of_charge_percent(53_950), 100);
         assert_eq!(curve.state_of_charge_percent(54_600), 100);
     }
 
