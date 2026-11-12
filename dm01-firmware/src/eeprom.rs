@@ -5,6 +5,8 @@
 //! the 16-entry nibble-table CRC-16 (`crc16_toseven`), and the bit-exact factory default
 //! EEPROM images extracted from both the DM01 (`TS1000W`) and DM02 (`TS500W`) `V6510C` binaries.
 
+use crate::battery::BatteryPreset;
+
 /// Flash address where the 480-byte configuration image is persisted on the MCU.
 pub const EEPROM_FLASH_BASE_ADDR: u32 = 0x0801_FC00;
 
@@ -400,13 +402,9 @@ impl EepromImage {
         {
             let res_mohm = u16::from_le_bytes([self.raw[off + 8], self.raw[off + 9]]);
             Some(DmPlusCustomConfig {
-                tuning_profile: self.raw[off + 2],
-                ceiling_policy: self.raw[off + 3],
-                nylon_gear_knee_rpm: self.raw[off + 4],
-                lvc_cushion_deci_v: self.raw[off + 5],
-                thermal_rollback_start_c: self.raw[off + 6],
                 street_legal_mode: StreetLegalMode::from_u8(self.raw[off + 7]),
                 battery_resistance_mohm: if res_mohm == 0xFFFF { 150 } else { res_mohm },
+                battery_preset: BatteryPreset::from_u8(self.raw[off + 10]),
             })
         } else {
             None
@@ -419,17 +417,20 @@ impl EepromImage {
         let off = DM_PLUS_CUSTOM_CONFIG_OFFSET;
         self.raw[off] = DM_PLUS_CUSTOM_MAGIC[0];
         self.raw[off + 1] = DM_PLUS_CUSTOM_MAGIC[1];
-        self.raw[off + 2] = cfg.tuning_profile;
-        self.raw[off + 3] = cfg.ceiling_policy;
-        self.raw[off + 4] = cfg.nylon_gear_knee_rpm;
-        self.raw[off + 5] = cfg.lvc_cushion_deci_v;
-        self.raw[off + 6] = cfg.thermal_rollback_start_c;
+        // Zero reserved bytes [off+2..off+7]. These previously held tuning-profile
+        // selectors; tuning is now compile-time constants in `power_curve`.
+        let mut r = off + 2;
+        while r < off + 7 {
+            self.raw[r] = 0;
+            r += 1;
+        }
         self.raw[off + 7] = cfg.street_legal_mode as u8;
         let res_bytes = cfg.battery_resistance_mohm.to_le_bytes();
         self.raw[off + 8] = res_bytes[0];
         self.raw[off + 9] = res_bytes[1];
-        // Zero reserved bytes [off+10..off+16]
-        let mut r = off + 10;
+        self.raw[off + 10] = cfg.battery_preset.to_u8();
+        // Zero reserved bytes [off+11..off+16]
+        let mut r = off + 11;
         while r < off + 16 {
             self.raw[r] = 0;
             r += 1;
@@ -470,43 +471,27 @@ impl StreetLegalMode {
 }
 
 /// Custom Open Firmware configuration persisted in previously unused EEPROM Block 1 zero padding (`0x04A..0x05A`).
+///
+/// Tuning profiles are no longer stored here. Cadence, torque curve, ceiling, and LVC behavior
+/// are compile-time constants in [`crate::power_curve`]. Bytes `off+2..off+7` and
+/// `off+11..off+16` are reserved; `off+10` stores the [`BatteryPreset`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmPlusCustomConfig {
-    /// Tuning profile selector:
-    /// 0: Stock V6510C
-    /// 1: GearSafe Progressive (Default)
-    /// 2: Uncapped Cadence
-    /// 3: Progressive Trail
-    /// 4: Commuter Comfort
-    pub tuning_profile: u8,
-    /// Assist ceiling policy:
-    /// 0: StockDualCeiling (Torque uses full Mode Current, ignoring Pwr%)
-    /// 1: UnifiedLevelCeiling (Torque respects assist level Pwr%)
-    pub ceiling_policy: u8,
-    /// Nylon primary reduction gear protection knee RPM (default: 18 RPM).
-    /// If 0, nylon gear protection is disabled.
-    pub nylon_gear_knee_rpm: u8,
-    /// Low-voltage cutoff linear cushion in 0.1V units (default: 30 = 3.0V).
-    pub lvc_cushion_deci_v: u8,
-    /// Thermal rollback initiation temperature in °C (default: 70°C).
-    pub thermal_rollback_start_c: u8,
     /// Street-legal compliance mode.
     pub street_legal_mode: StreetLegalMode,
     /// Battery internal pack resistance in milliohms for EggRider-grade voltage sag compensation (default: 150 mΩ).
     /// If 0, dynamic sag compensation is disabled.
     pub battery_resistance_mohm: u16,
+    /// Battery nominal pack preset (`off+10`). `0` remains 48V for backward compatibility.
+    pub battery_preset: BatteryPreset,
 }
 
 impl Default for DmPlusCustomConfig {
     fn default() -> Self {
         Self {
-            tuning_profile: 1, // GearSafe Progressive default
-            ceiling_policy: 1, // Unified Level Ceiling default
-            nylon_gear_knee_rpm: 18,
-            lvc_cushion_deci_v: 30, // 3.0V
-            thermal_rollback_start_c: 70,
             street_legal_mode: StreetLegalMode::Unrestricted,
             battery_resistance_mohm: 150,
+            battery_preset: BatteryPreset::V48,
         }
     }
 }
@@ -556,13 +541,9 @@ mod tests {
         assert_eq!(dm01.custom_config(), None); // Stock has no custom config
 
         let custom = DmPlusCustomConfig {
-            tuning_profile: 1, // GearSafe
-            ceiling_policy: 1, // Unified
-            nylon_gear_knee_rpm: 18,
-            lvc_cushion_deci_v: 30,
-            thermal_rollback_start_c: 72,
             street_legal_mode: StreetLegalMode::PermanentLock,
             battery_resistance_mohm: 185,
+            battery_preset: BatteryPreset::V52,
         };
         dm01.set_custom_config(&custom);
         assert_eq!(dm01.verify_all_blocks(), Ok(()));

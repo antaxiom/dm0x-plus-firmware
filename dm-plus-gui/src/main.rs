@@ -6,6 +6,7 @@
 
 slint::include_modules!();
 
+use dm01_firmware::battery::BatteryPreset;
 use dm01_firmware::display_patcher::{inspect_display, patch_display, IntelHexFile, LockoutStatus};
 use dm01_firmware::eeprom::{EepromImage, StreetLegalMode, EEPROM_TOTAL_LEN};
 use dm01_firmware::flasher::FlasherError;
@@ -521,6 +522,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 let custom_path = custom_path_str.as_str().to_string();
                 let compliance_label = street_legal_str.as_str().to_string();
                 let battery_label = format!("{}V", battery_volts);
+                let battery_preset = match battery_volts {
+                    36 => BatteryPreset::V36,
+                    52 => BatteryPreset::V52,
+                    _ => BatteryPreset::V48,
+                };
                 let res_mohm = battery_resistance_mohm.max(0) as u16;
                 let is_dm02 = target_str.contains("DM02");
                 let max_ceiling = if is_dm02 { 20 } else { 32 };
@@ -564,6 +570,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 if let Some((ee_off, mut ee)) = EepromImage::find_in_payload(&payload) {
                     let mut custom = ee.custom_config().unwrap_or_default();
                     custom.battery_resistance_mohm = res_mohm;
+                    // Built-in firmware follows the pack selector. Custom .Pack files keep
+                    // whatever preset their author embedded, since the selector is disabled.
+                    if !source.contains("Custom") {
+                        custom.battery_preset = battery_preset;
+                    }
                     custom.street_legal_mode = match compliance_label.as_str() {
                         s if s.contains("Permanent") => StreetLegalMode::PermanentLock,
                         s if s.contains("Default") => StreetLegalMode::StreetLegalDefault,

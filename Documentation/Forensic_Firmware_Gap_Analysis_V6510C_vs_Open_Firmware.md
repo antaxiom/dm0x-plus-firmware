@@ -155,13 +155,13 @@ In addition to the 18-byte `0x5A` telemetry/command framing, disassembly of `0x0
 
 | Feature / Mechanism | Stock `V6510C` Implementation | `dm01-firmware` Status | Gap Assessment & Impact |
 | :--- | :--- | :--- | :--- |
-| **Ceiling Architecture** | Dual split: Global Mode Ceiling (ignores `Pwr%`) for torque; Level Power Ceiling for PAS/throttle | Stock mode replicates dual split; optional `UnifiedLevelCeiling` respects `Pwr%` | **Complete + Enhanced**: Rider-selectable via profile system. |
+| **Ceiling Architecture** | Dual split: Global Mode Ceiling (ignores `Pwr%`) for torque; Level Power Ceiling for PAS/throttle | Stock dual split by default (`TORQUE_USES_LEVEL_CEILING = false`); live `tune --ceiling 1` can optionally unify | **Complete**: Factory parity with an optional live override, no runtime profile layer. |
 | **Thermal Rollback** | Continuous linear rollback from 70°C down to 0A at 100°C anchored to Sport limit (30.0A) | Exact integer math rollback matching `0x08005478` | **Exact Bit Parity**: Verified against decompiled formulas. |
-| **Torque Auto-Zero Tracking** | 5-sample idle delta window (< 20 mV over 50 ticks) with 4:1 IIR filter inside 400..1000 mV | `TorqueAutoZeroTracker` with exact 4:1 IIR and bounds check | **Exact Bit Parity**: Preserves factory calibration behavior. |
-| **Cadence Scaling** | Multiplies torque effort by $\max(\text{Cadence}, 5) / 60$, clamped to mode ceiling | `Stock60Rpm` matches factory; `Uncapped` and `LinearRamp` available | **Complete + Enhanced**: Eliminates steep hill-climbing torque penalty. |
-| **Low-Cadence Nylon Gear Safety** | Stock firmware delivers full torque down to 5 RPM, contributing to stripped nylon primary gears | `GearSafeKnee` provides soft torque below 18 RPM, ramping to 100% by 35 RPM | **Intentional Open Firmware Advantage**: Prevents mechanical drive failure. |
+| **Torque Auto-Zero Tracking** | 5-sample idle delta window (< 20 mV over 50 ticks) with 4:1 IIR filter inside 400..1300 mV | `TorqueAutoZeroTracker` with exact 4:1 IIR and bounds check | **Exact Bit Parity**: Preserves factory calibration behavior. |
+| **Cadence Scaling** | Multiplies torque effort by $\max(\text{Cadence}, 5) / 60$, clamped to mode ceiling | Compiled gear-safe ramp: <=40% below 18 RPM, 100% at 35+ RPM | **Intentional Open Firmware Advantage**: Removes the low-cadence stall penalty while protecting the nylon gear. |
+| **Low-Cadence Nylon Gear Safety** | Stock firmware delivers full torque down to 5 RPM, contributing to stripped nylon primary gears | Compiled gear-safe ramp provides soft torque below 18 RPM, ramping to 100% by 35 RPM | **Intentional Open Firmware Advantage**: Prevents mechanical drive failure. |
 | **Speed Sensor Failure Fallback** | When spoke magnet is lost, stock cuts assist unless `SpeedSensorFail = 0` (Speed Unlimit) is set | Sensorless speed kinematic estimation from cadence + sprocket ratio; unlimit bypass implemented | **Complete + Enhanced**: Provides telemetry speed while allowing full power in unlimit mode. |
-| **LVC Reserve Cushion** | 3.0V linear taper above Low-Voltage Cutoff down to 25% reserve cushion | Configurable policy: Stock 25% cushion or `TrueZeroCutoff` | **Complete + Enhanced**: Protects battery BMS from abrupt trip under sag. |
+| **LVC Reserve Cushion** | 3.0V linear taper above Low-Voltage Cutoff down to 25% reserve cushion | Compiled 4.0 V true-zero taper (`LVC_CUSHION_FLOOR_PERCENT = 0`) | **Complete + Enhanced**: Protects battery BMS from abrupt trip under sag. |
 
 ---
 

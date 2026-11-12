@@ -4,9 +4,10 @@
 //! - `toseven_pack info <firmware.Pack>`
 //! - `toseven_pack unpack <firmware.Pack> <decrypted_payload.bin>`
 //! - `toseven_pack repack <template.Pack> <payload.bin> <output.Pack>`
-//! - `toseven_pack create <dm01|dm02> <payload.bin> <output.Pack>` (creates a fresh .Pack from compiled binary)
+//! - `toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack> [--battery 36|48|52]` (creates a fresh .Pack from a compiled binary and optionally patches the embedded battery preset)
 //! - `toseven_pack verify <stock.Pack>` (verifies official release and bit-identical round trip)
 
+use dm01_firmware::battery::BatteryPreset;
 use dm01_firmware::eeprom::{EepromImage, EEPROM_TOTAL_LEN};
 use dm01_firmware::pack::{
     decrypt_payload, extract_flash_from_elf, parse_pack_metadata, repack_firmware, MotorTarget,
@@ -46,7 +47,7 @@ fn print_usage() {
     eprintln!("  toseven_pack info <firmware.Pack>");
     eprintln!("  toseven_pack unpack <firmware.Pack> <decrypted_payload.bin>");
     eprintln!("  toseven_pack repack <template.Pack> <payload.bin> <output.Pack>");
-    eprintln!("  toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack>");
+    eprintln!("  toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack> [--battery 36|48|52]");
     eprintln!("  toseven_pack objcopy <firmware.elf> <output.bin>");
     eprintln!("  toseven_pack verify <stock.Pack>");
     eprintln!("  toseven_pack flash <firmware.Pack> [--dry-run]");
@@ -1182,13 +1183,44 @@ fn main() {
     if cmd == "create" {
         if args.len() < 5 {
             eprintln!(
-                "Usage: toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack>"
+                "Usage: toseven_pack create <dm01|dm02> <payload.bin|payload.elf> <output.Pack> [--battery 36|48|52]"
             );
             process::exit(1);
         }
         let target_str = args[2].to_ascii_lowercase();
         let payload_path = &args[3];
         let out_pack_path = &args[4];
+
+        let mut requested_battery: Option<BatteryPreset> = None;
+        let mut idx = 5;
+        while idx < args.len() {
+            let arg = args[idx].as_str();
+            let value = if arg == "--battery" {
+                if idx + 1 >= args.len() {
+                    eprintln!("--battery requires a value: 36, 48, or 52");
+                    process::exit(1);
+                }
+                idx += 1;
+                Some(args[idx].as_str())
+            } else if let Some(v) = arg.strip_prefix("--battery=") {
+                Some(v)
+            } else {
+                eprintln!("Unknown create option '{arg}'. Expected [--battery 36|48|52]");
+                process::exit(1);
+            };
+            if let Some(value) = value {
+                requested_battery = Some(match value {
+                    "36" => BatteryPreset::V36,
+                    "48" => BatteryPreset::V48,
+                    "52" => BatteryPreset::V52,
+                    _ => {
+                        eprintln!("Battery preset must be 36, 48, or 52 (got '{value}')");
+                        process::exit(1);
+                    }
+                });
+            }
+            idx += 1;
+        }
 
         let target = match target_str.as_str() {
             "dm01" => MotorTarget::Dm01,
@@ -1207,7 +1239,7 @@ fn main() {
             }
         };
 
-        let payload = if raw_input.starts_with(b"\x7fELF") {
+        let mut payload = if raw_input.starts_with(b"\x7fELF") {
             match extract_flash_from_elf(&raw_input) {
                 Ok(flash) => {
                     println!(
@@ -1224,6 +1256,22 @@ fn main() {
         } else {
             raw_input
         };
+
+        if let Some(preset) = requested_battery {
+            if let Some((ee_off, mut ee)) = EepromImage::find_in_payload(&payload) {
+                let mut custom = ee.custom_config().unwrap_or_default();
+                custom.battery_preset = preset;
+                ee.set_custom_config(&custom);
+                payload[ee_off..ee_off + EEPROM_TOTAL_LEN].copy_from_slice(&ee.raw);
+                println!(
+                    "Patched embedded EEPROM battery preset: {:?} (LVC {} mV)",
+                    preset,
+                    preset.low_cut_voltage_mv()
+                );
+            } else {
+                eprintln!("Warning: no embedded EEPROM image found; --battery was not applied");
+            }
+        }
 
         if payload.len() < 8 {
             eprintln!("Payload too small to contain a valid ARM Cortex-M vector table");
@@ -1628,6 +1676,16 @@ fn main() {
                         "Default EAssist[1..5]: {:?}%",
                         eeprom.assist_eassist_table()
                     );
+                    if let Some(custom) = eeprom.custom_config() {
+                        println!(
+                            "DM+ Custom Config:  preset={:?} ({} mV nominal, {} mV LVC), resistance={} mΩ, compliance={:?}",
+                            custom.battery_preset,
+                            custom.battery_preset.nominal_voltage_mv(),
+                            custom.battery_preset.low_cut_voltage_mv(),
+                            custom.battery_resistance_mohm,
+                            custom.street_legal_mode
+                        );
+                    }
                 }
             }
         }

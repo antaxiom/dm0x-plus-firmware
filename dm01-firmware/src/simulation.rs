@@ -7,7 +7,6 @@ use crate::config::{AssistSelection, MotorConfig, RidingMode};
 use crate::control::{ControlOutput, Dm01Controller, SensorInputs};
 use crate::foc::{compute_svpwm_v6510c_f32, decode_hall_angle, HallPllObserver};
 use crate::power_curve::{compute_global_mode_ceiling_da, TorqueSensorState};
-use crate::tuning::TuningProfile;
 
 /// Runs the complete comparative simulation suite and prints formatted comparison tables.
 pub fn run_all_simulations() {
@@ -28,7 +27,7 @@ pub fn run_all_simulations() {
     println!("================================================================================");
     println!(" [✔] Inverter Dead-Time Margin:    1.50 µs confirmed (6.0%..94.0% duty clamp)");
     println!(" [✔] Thermal Shutdown Protection:  Linear rollback 70°C..100°C (0.0A at 100°C)");
-    println!(" [✔] Battery Undervoltage Shield:  3.0V cushion down to 25%, hard cutoff at LVC");
+    println!(" [✔] Battery Undervoltage Shield:  4.0V true-zero cushion, hard cutoff at LVC");
     println!(" [✔] Emergency Cutoff Latency:     0 ms (instantaneous High-Z on all 4 interlocks)");
     println!(" [✔] Hardware Watchdog (IWDG):     500 ms independent LSI timeout enabled");
     println!(" [✔] Hall Observer Standstill:     Zero-velocity decay after >100 ms stationary");
@@ -38,20 +37,12 @@ pub fn run_all_simulations() {
 fn simulate_scenario_1_hill_climb() {
     println!("\n--- SCENARIO 1: Steep Hill Climb from Dead Stop (Pedal Effort: 1800 mV) ---");
     println!("Simulating rider on a steep 15% gradient in Sport Mode (30.0A Max, Level 3: 60%)");
-    println!(
-        "Comparison of Stock V6510C (60 RPM scaling) vs. Uncapped Cadence vs. Progressive Trail"
-    );
+    println!("Compiled gear-safe cadence ramp: <=40% below 18 RPM, 100% at 35+ RPM");
     println!("{:-<80}", "");
-    println!(" Cadence | Pedal mV | Stock V6510C | Uncapped Cadence | Progressive Trail | Boost");
+    println!(" Cadence | Pedal mV | Gear-Safe Current | Cadence Multiplier | Nylon Gear State");
     println!("{:-<80}", "");
 
-    let mut stock_state = TorqueSensorState::new(750, 3000, 50);
-    let mut uncapped_state = TorqueSensorState::new(750, 3000, 50);
-    let mut prog_state = TorqueSensorState::new(750, 3000, 50);
-
-    let stock_profile = TuningProfile::stock_v6510c();
-    let uncapped_profile = TuningProfile::uncapped_cadence();
-    let prog_profile = TuningProfile::progressive_trail();
+    let mut torque_state = TorqueSensorState::new(750, 3000, 50);
 
     let pedal_mv = 1800;
     let strength = 10;
@@ -63,51 +54,30 @@ fn simulate_scenario_1_hill_climb() {
 
     let cadences = [0, 5, 10, 15, 20, 25, 30, 45, 60, 75, 90];
     for &cadence in &cadences {
-        let stock_curr = stock_state.compute_current_da_with_profile(
+        let current_da = torque_state.compute_current_da(
             pedal_mv,
             cadence,
-            1,
+            0,
             strength,
             eassist,
             offset_da,
             mode_max_da,
             global_ceil_da,
             level_ceil_da,
-            &stock_profile,
         );
-        let uncapped_curr = uncapped_state.compute_current_da_with_profile(
-            pedal_mv,
-            cadence,
-            1,
-            strength,
-            eassist,
-            offset_da,
-            mode_max_da,
-            global_ceil_da,
-            level_ceil_da,
-            &uncapped_profile,
-        );
-        let prog_curr = prog_state.compute_current_da_with_profile(
-            pedal_mv,
-            cadence,
-            1,
-            strength,
-            eassist,
-            offset_da,
-            mode_max_da,
-            global_ceil_da,
-            level_ceil_da,
-            &prog_profile,
-        );
-
-        let s_a = stock_curr as f32 / 10.0;
-        let u_a = uncapped_curr as f32 / 10.0;
-        let p_a = prog_curr as f32 / 10.0;
-        let boost = if stock_curr > 0 { u_a / s_a } else { 1.0 };
+        let amps = current_da as f32 / 10.0;
+        let multiplier = crate::power_curve::cadence_multiplier_q8(cadence) as f32 / 256.0 * 100.0;
+        let gear_state = if cadence < 18 {
+            "PROTECTED"
+        } else if cadence < 35 {
+            "RAMPING"
+        } else {
+            "FULL ASSIST"
+        };
 
         println!(
-            " {:3} RPM |  {:4} mV  |    {:5.1} A   |      {:5.1} A      |      {:5.1} A      | {:4.2}x",
-            cadence, pedal_mv, s_a, u_a, p_a, boost
+            " {:3} RPM |  {:4} mV  |      {:5.1} A      |       {:5.1}%       | {}",
+            cadence, pedal_mv, amps, multiplier, gear_state
         );
     }
 }
@@ -151,7 +121,7 @@ fn simulate_scenario_2_speed_soft_taper() {
             cutoff_active: false,
             thermal_throttling: false,
         };
-        for _ in 0..20 {
+        for _ in 0..200 {
             out = controller.step_v6510c(&inputs);
         }
 
@@ -212,8 +182,8 @@ fn simulate_scenario_3_thermal_rollback() {
 }
 
 fn simulate_scenario_4_battery_lvc_cushion() {
-    println!("\n--- SCENARIO 4: Battery Voltage Sag & 3.0V Low-Voltage Cutoff Cushion ---");
-    println!("Simulating battery discharge toward 39.0V LVC (cushion active within 39.0V..42.0V)");
+    println!("\n--- SCENARIO 4: Battery Voltage Sag & 4.0V True-Zero LVC Cushion ---");
+    println!("Simulating battery discharge toward 39.0V LVC (cushion active within 39.0V..43.0V)");
     println!("{:-<80}", "");
     println!(
         " Pack Voltage | LVC Setting | Commanded Current | Cushion Scale | Battery Protection"
@@ -258,13 +228,13 @@ fn simulate_scenario_4_battery_lvc_cushion() {
 
         let curr_a = out.target_current_ma as f32 / 1000.0;
 
-        let (cushion_pct, note) = if v >= 42.0 {
+        let (cushion_pct, note) = if v >= 43.0 {
             (100.0, "NORMAL OPERATION")
         } else if v <= 39.0 {
             (0.0, "LVC CUTOFF (Battery Safe)")
         } else {
-            let scale = 0.25 + 0.75 * ((v - 39.0) / 3.0);
-            (scale * 100.0, "RESERVE CUSHION (Gentle Taper)")
+            let scale = (v - 39.0) / 4.0;
+            (scale * 100.0, "RESERVE CUSHION (True-Zero Taper)")
         };
 
         println!(

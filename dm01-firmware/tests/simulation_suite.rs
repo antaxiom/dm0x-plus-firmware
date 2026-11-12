@@ -5,32 +5,27 @@
 //! 1. Steep hill start from dead stop (25 RPM climbing cadence)
 //! 2. High-speed sprint & 25 km/h soft-taper
 //! 3. Thermal rollback under sustained heavy load (60°C..100°C)
-//! 4. Battery voltage sag & 3.0V low-voltage cutoff (LVC) cushion
+//! 4. Battery voltage sag & 4.0V true-zero low-voltage cutoff (LVC) cushion
 //! 5. 3-Phase FOC Space Vector PWM (SVPWM) duty shaping and dead-time margins
 //! 6. Hardware safety interlock latency (emergency brake, backpedaling, illegal Hall state)
 
 use dm01_firmware::config::{AssistSelection, MotorConfig, RidingMode};
 use dm01_firmware::control::{ControlOutput, Dm01Controller, SensorInputs};
 use dm01_firmware::foc::{compute_svpwm_v6510c_f32, decode_hall_angle, HallPllObserver};
-use dm01_firmware::power_curve::{compute_global_mode_ceiling_da, TorqueSensorState};
-use dm01_firmware::tuning::TuningProfile;
+use dm01_firmware::power_curve::{
+    cadence_multiplier_q8, compute_global_mode_ceiling_da, TorqueSensorState,
+};
 
 #[test]
 fn test_scenario_1_steep_hill_start_comparison() {
-    println!("\n=== SCENARIO 1: Steep Hill Start from Dead Stop (25 RPM) ===");
+    println!("\n=== SCENARIO 1: Steep Hill Start from Dead Stop (Gear-Safe Ramp) ===");
     println!("Simulating rider starting on a 15% grade with heavy pedal pressure (1800 mV)");
     println!("Mode: Sport (30.0A max), Level: 3 (Power=60%, EAssist=60%)");
     println!("---------------------------------------------------------------------");
-    println!(
-        " Cadence | Pedal Effort | Stock V6510C Current | Uncapped Cadence Current | Boost Ratio"
-    );
+    println!(" Cadence | Pedal Effort | Gear-Safe Current | Cadence Multiplier | Zone");
     println!("---------------------------------------------------------------------");
 
-    let mut stock_state = TorqueSensorState::new(750, 3000, 50);
-    let mut uncapped_state = TorqueSensorState::new(750, 3000, 50);
-
-    let stock_profile = TuningProfile::stock_v6510c();
-    let uncapped_profile = TuningProfile::uncapped_cadence();
+    let mut torque_state = TorqueSensorState::new(750, 3000, 50);
 
     let pedal_mv = 1800; // Heavy pedal push
     let strength_value = 10;
@@ -41,63 +36,48 @@ fn test_scenario_1_steep_hill_start_comparison() {
     let level_ceiling_da = 180; // 60% of 30A = 18.0A
 
     let cadences = [0, 5, 10, 15, 20, 25, 30, 45, 60, 75, 90];
+    let mut previous_current = 0u16;
     for &cadence in &cadences {
-        let stock_curr = stock_state.compute_current_da_with_profile(
+        let current_da = torque_state.compute_current_da(
             pedal_mv,
             cadence,
-            1,
+            0,
             strength_value,
             eassist_pct,
             current_offset_da,
             mode_max_da,
             global_ceiling_da,
             level_ceiling_da,
-            &stock_profile,
-        );
-        let uncapped_curr = uncapped_state.compute_current_da_with_profile(
-            pedal_mv,
-            cadence,
-            1,
-            strength_value,
-            eassist_pct,
-            current_offset_da,
-            mode_max_da,
-            global_ceiling_da,
-            level_ceiling_da,
-            &uncapped_profile,
         );
 
-        let stock_a = stock_curr as f32 / 10.0;
-        let uncapped_a = uncapped_curr as f32 / 10.0;
-        let boost = if stock_curr > 0 {
-            uncapped_a / stock_a
+        let amps = current_da as f32 / 10.0;
+        let multiplier = cadence_multiplier_q8(cadence) as f32 / 256.0 * 100.0;
+        let zone = if cadence < 18 {
+            "NYLON PROTECTED"
+        } else if cadence < 35 {
+            "RAMPING"
         } else {
-            1.0
+            "FULL ASSIST"
         };
 
         println!(
-            " {:3} RPM |   {:4} mV   |      {:5.1} A       |         {:5.1} A        |   {:.2}x",
-            cadence, pedal_mv, stock_a, uncapped_a, boost
+            " {:3} RPM |   {:4} mV   |      {:5.1} A       |       {:5.1}%       | {}",
+            cadence, pedal_mv, amps, multiplier, zone
         );
 
-        if cadence > 0 && cadence < 60 {
+        if cadence > 0 && cadence <= 35 {
             assert!(
-                uncapped_curr > stock_curr,
-                "Uncapped profile must provide superior hill-climbing power at {} RPM",
-                cadence
-            );
-        } else if cadence == 60 {
-            assert_eq!(
-                stock_curr, uncapped_curr,
-                "At 60 RPM, stock and uncapped profiles converge at 1.0x base current"
-            );
-        } else if cadence > 60 {
-            assert!(
-                stock_curr >= uncapped_curr,
-                "Above 60 RPM, stock scales linearly with cadence up to mode ceiling"
+                current_da >= previous_current,
+                "Gear-safe current must rise monotonically up to 35 RPM"
             );
         }
+        previous_current = current_da;
     }
+
+    assert_eq!(cadence_multiplier_q8(0), 0);
+    assert_eq!(cadence_multiplier_q8(18), 102);
+    assert_eq!(cadence_multiplier_q8(35), 256);
+    assert_eq!(cadence_multiplier_q8(90), 256);
 }
 
 #[test]
@@ -142,7 +122,7 @@ fn test_scenario_2_speed_limit_soft_taper_simulation() {
             cutoff_active: false,
             thermal_throttling: false,
         };
-        for _ in 0..20 {
+        for _ in 0..200 {
             out = controller.step_v6510c(&inputs);
         }
 
@@ -232,7 +212,7 @@ fn test_scenario_3_thermal_rollback_simulation() {
 
 #[test]
 fn test_scenario_4_battery_sag_and_lvc_reserve_cushion() {
-    println!("\n=== SCENARIO 4: Battery Voltage Sag & LVC 3.0V Cushion ===");
+    println!("\n=== SCENARIO 4: Battery Voltage Sag & LVC 4.0V True-Zero Cushion ===");
     println!("Simulating pack discharging toward 39.0V Low Voltage Cutoff (LVC)");
     println!("---------------------------------------------------------------------");
     println!(
@@ -277,18 +257,18 @@ fn test_scenario_4_battery_sag_and_lvc_reserve_cushion() {
         }
 
         let curr_a = out.target_current_ma as f32 / 1000.0;
-        let cushion_scale = if v >= 42.0 {
+        let cushion_scale = if v >= 43.0 {
             100.0
         } else if v <= 39.0 {
             0.0
         } else {
-            25.0 + (((v - 39.0) / 3.0) * 75.0)
+            ((v - 39.0) / 4.0) * 100.0
         };
 
         let status = if out.cutoff_active {
             "LVC CUTOFF (Battery Safe)"
-        } else if v < 42.0 {
-            "RESERVE CUSHION (Gentle Taper)"
+        } else if v < 43.0 {
+            "RESERVE CUSHION (True-Zero Taper)"
         } else {
             "NORMAL OPERATION"
         };

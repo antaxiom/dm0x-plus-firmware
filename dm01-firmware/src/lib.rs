@@ -10,10 +10,9 @@
 //! ## Core Subsystems
 //! - [`pack`] — `.Pack` firmware image container unpacker, header parser, XOR cipher (`0xA8`/`0x67` for DM01, `0xF7`/`0xE2` for DM02), and bit-exact repacker.
 //! - [`eeprom`] — 5-block (480-byte) Flash EEPROM configuration storage (`0xA5` XOR cipher, `A5 01 FE` magic, 16-entry nibble CRC-16, and embedded DM01 `TS1000W` & DM02 `TS500W` factory defaults).
-//! - [`power_curve`] — Exact `V6510C` integer-math power curve pipeline (Global Mode Ceiling vs. Level Power Ceiling, Torque Sensor auto-zero drift tracking & 60 RPM cadence scaling, PAS curve, Throttle slew-rate limiter, Arbitrator, Speed Soft-Taper, and LVC 3.0V cushion).
+//! - [`power_curve`] — Exact `V6510C` integer-math power curve pipeline (Global Mode Ceiling vs. Level Power Ceiling, Torque Sensor auto-zero drift tracking, gear-safe cadence ramp, PAS curve, Throttle slew-rate limiter, Arbitrator, Speed Soft-Taper, and configurable true-zero LVC cushion). Compile-time tuning lives in the module constants.
 //! - [`foc`] — Field-Oriented Control (FOC) engine with Clarke/Park transforms, quarter-wave sine/cosine lookup, Hall sensor + PLL observer, dual $I_d/I_q$ PI controllers, and 7-segment SVPWM with `[0.06, 0.94]` dead-time shaping.
 //! - [`protocol`] — Display UART communication protocol with `0x69` stream XOR cipher and CRC-16 verification.
-//! - [`tuning`] — Source-level modular tuning profiles (uncapped cadence, progressive torque curves, unified assist ceilings).
 //! - [`stock`] — Pinned SHA-256 hashes of known official `.Pack` releases.
 //! - [`sha256`] — Dependency-free `no_std` SHA-256.
 //! - [`config`], [`sensors`], [`control`], [`thermal`], [`battery`], [`faults`], [`hal`] — High-level hardware abstraction, telemetry, and motor controller state machines.
@@ -40,4 +39,3 @@ pub mod sha256;
 pub mod simulation;
 pub mod stock;
 pub mod thermal;
-pub mod tuning;

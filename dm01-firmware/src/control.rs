@@ -15,7 +15,6 @@ use crate::power_curve::{
 };
 use crate::sensors::{parse_throttle_permille, TorqueSensorState};
 use crate::thermal::ThermalMonitor;
-use crate::tuning::TuningProfile;
 
 /// Snapshot of physical sensor inputs sampled at each periodic control tick.
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +49,9 @@ pub struct ControlOutput {
 /// (`step_v6510c`) and the T24 Display Manual baseline (`step`).
 pub struct Dm01Controller {
     pub config: MotorConfig,
-    pub tuning: TuningProfile,
+    /// Optional live override for the compile-time [`crate::power_curve::TORQUE_USES_LEVEL_CEILING`]
+    /// default. When true, torque is also clamped by the active assist level's `Pwr%`.
+    pub torque_respects_level_ceiling: bool,
     pub mode: RidingMode,
     pub assist: AssistSelection,
     pub torque_state: TorqueSensorState,
@@ -73,7 +74,7 @@ impl Dm01Controller {
         let th_start_mv = config.throttle_startup_vol_mv;
         Self {
             config,
-            tuning: TuningProfile::stock_v6510c(),
+            torque_respects_level_ceiling: crate::power_curve::TORQUE_USES_LEVEL_CEILING,
             mode: RidingMode::City,
             assist: AssistSelection::Level(1),
             torque_state: TorqueSensorState::new(zero_mv),
@@ -108,13 +109,6 @@ impl Dm01Controller {
         }
     }
 
-    /// Creates a new `Dm01Controller` initialized with a specified custom [`TuningProfile`].
-    pub fn with_tuning(config: MotorConfig, tuning: TuningProfile) -> Self {
-        let mut controller = Self::new(config);
-        controller.tuning = tuning;
-        controller
-    }
-
     /// Applies an in-SRAM [`crate::protocol::LiveParamUpdateFrame`] (`0x95`) without MCU reboot or EEPROM wear.
     /// Respects [`MotorConfig::is_street_legal_locked()`] so permanent compliance locks cannot be bypassed.
     pub fn apply_live_param_update(&mut self, update: &crate::protocol::LiveParamUpdateFrame) {
@@ -141,11 +135,7 @@ impl Dm01Controller {
         if update.throttle_mode <= 12 {
             self.config.throttle_control_mode = update.throttle_mode;
         }
-        self.tuning.ceiling_policy = if update.assist_ceiling_policy == 0 {
-            crate::tuning::AssistCeilingPolicy::StockDualCeiling
-        } else {
-            crate::tuning::AssistCeilingPolicy::UnifiedLevelCeiling
-        };
+        self.torque_respects_level_ceiling = update.assist_ceiling_policy != 0;
     }
 
     /// Computes the effective vehicle speed in 0.1 km/h.
@@ -220,16 +210,8 @@ impl Dm01Controller {
         let lvc_dv = (self.config.low_cut_voltage_mv / 100) as u16;
 
         let street_legal_active = self.is_currently_street_legal();
-        let temp_min_c = if self.tuning.thermal_rollback_start_c != 70 {
-            self.tuning.thermal_rollback_start_c
-        } else {
-            self.config.temp_ctl_min_c
-        };
-        let temp_max_c = if self.tuning.thermal_rollback_cutoff_c != 100 {
-            self.tuning.thermal_rollback_cutoff_c
-        } else {
-            self.config.temp_ctl_max_c
-        };
+        let temp_min_c = self.config.temp_ctl_min_c;
+        let temp_max_c = self.config.temp_ctl_max_c;
 
         // 1. Stage 1 Ceilings: Global Mode Ceiling (Torque) vs Level Power Ceiling (PAS/Throttle)
         let global_ceil_da = compute_global_mode_ceiling_da(
@@ -268,10 +250,12 @@ impl Dm01Controller {
             level_ceil_da
         };
 
-        // 2. Stage 2A: Torque Sensor Curve (ignores Pwr[level], uses EAssist[level] and global_ceil_da)
+        // 2. Stage 2A: Torque Sensor Curve. The compiled default ignores Pwr[level] and uses
+        //    EAssist[level] plus global_ceil_da. A live `--ceiling 1` update can additionally
+        //    clamp torque to the active level ceiling.
         let torque_offset_da = (self.config.torque_min_out_current_ma / 100) as u16;
-        let torque_da = if self.config.torque_sensor_enabled {
-            self.v6510c_torque.compute_current_da_with_profile(
+        let mut torque_da = if self.config.torque_sensor_enabled {
+            self.v6510c_torque.compute_current_da(
                 inputs.torque_adc_mv,
                 inputs.cadence_rpm,
                 self.config.torque_filter,
@@ -281,11 +265,13 @@ impl Dm01Controller {
                 mode_max_da,
                 global_ceil_da,
                 level_ceil_da,
-                &self.tuning,
             )
         } else {
             0
         };
+        if self.torque_respects_level_ceiling {
+            torque_da = torque_da.min(level_ceil_da);
+        }
 
         // 3. Stage 2B: Cadence (PAS) Curve (capped by level_ceil_da = Pwr[level])
         let pas_active = self.config.pas_type != PasType::Disable
@@ -333,7 +319,7 @@ impl Dm01Controller {
             speed_limit_deci_kph = speed_limit_deci_kph.min(250); // Hard clamp to 25.0 km/h
         }
         let eff_speed = self.effective_wheel_speed_deci_kph(inputs);
-        let final_da = self.v6510c_arbitrator.step_with_profile(
+        let final_da = self.v6510c_arbitrator.step(
             cutoff,
             pedaling_forward,
             torque_da,
@@ -344,7 +330,6 @@ impl Dm01Controller {
             inputs.walk_assist_held,
             battery_dv,
             lvc_dv,
-            &self.tuning,
         );
 
         ControlOutput {
@@ -708,51 +693,35 @@ mod tests {
     }
 
     #[test]
-    fn test_controller_with_gear_safe_tuning_profile() {
+    fn test_controller_gear_safe_cadence_default() {
         let config = MotorConfig::default();
-        let mut ctrl_stock = Dm01Controller::new(config.clone());
-        let mut ctrl_gearsafe =
-            Dm01Controller::with_tuning(config, TuningProfile::gear_safe_trail());
-
-        ctrl_stock.mode = RidingMode::Sport;
-        ctrl_stock.assist = AssistSelection::Level(5);
-        ctrl_gearsafe.mode = RidingMode::Sport;
-        ctrl_gearsafe.assist = AssistSelection::Level(5);
+        let mut ctrl = Dm01Controller::new(config);
+        ctrl.mode = RidingMode::Sport;
+        ctrl.assist = AssistSelection::Level(5);
 
         let mut inputs = default_inputs();
         inputs.torque_adc_mv = 2500;
         inputs.wheel_speed_deci_kph = 100;
 
-        // At 10 RPM (severe hill climbing / near-stall):
-        // Gear-safe profile protects the blue nylon reduction gear from destructive stall torque
+        // At 10 RPM (severe hill climbing / near-stall), the compiled gear-safe knee
+        // must limit current to protect the blue nylon reduction gear.
         inputs.cadence_rpm = 10;
-        let out_stock_10 = ctrl_stock.step_v6510c(&inputs);
-        let out_gearsafe_10 = ctrl_gearsafe.step_v6510c(&inputs);
-        assert!(
-            out_gearsafe_10.target_current_ma > 0,
-            "Must provide gentle assist"
-        );
-        assert!(
-            out_stock_10.target_current_ma > 0,
-            "Stock also provides initial floor"
-        );
-
-        // At 35 RPM: Gear-safe profile delivers full torque assist (100%), whereas stock is only 35/60 = 58%
-        inputs.cadence_rpm = 35;
-        // Step enough iterations to let the ±0.2A/tick arbitrator ramp settle to steady state
+        let mut out_10 = ctrl.step_v6510c(&inputs);
         for _ in 0..150 {
-            ctrl_stock.step_v6510c(&inputs);
-            ctrl_gearsafe.step_v6510c(&inputs);
+            out_10 = ctrl.step_v6510c(&inputs);
         }
-        let out_stock_35 = ctrl_stock.step_v6510c(&inputs);
-        let out_gearsafe_35 = ctrl_gearsafe.step_v6510c(&inputs);
+        assert!(out_10.target_current_ma > 0, "Must provide gentle assist");
+
+        // At 35 RPM the gear-safe ramp reaches 100% assist. Let the ±0.2A/tick
+        // arbitrator settle before comparing.
+        inputs.cadence_rpm = 35;
+        let mut out_35 = ctrl.step_v6510c(&inputs);
+        for _ in 0..150 {
+            out_35 = ctrl.step_v6510c(&inputs);
+        }
         assert!(
-            out_gearsafe_35.target_current_ma > out_gearsafe_10.target_current_ma,
+            out_35.target_current_ma > out_10.target_current_ma,
             "Torque must ramp up safely by 35 RPM"
-        );
-        assert!(
-            out_gearsafe_35.target_current_ma > out_stock_35.target_current_ma,
-            "Gear-safe profile achieves full assist at 35 RPM ahead of stock 60 RPM"
         );
     }
 

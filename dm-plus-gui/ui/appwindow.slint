@@ -82,6 +82,7 @@ export component MainWindow inherits Window {
     in-out property <string> motor-custom-pack-path: "";
     in-out property <string> motor-target: "DM01 (External 12-FET)";
     in-out property <string> battery-voltage: "48V (13S, 54.6V Peak)";
+    out property <int> battery-nominal-v: root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48);
     in-out property <float> max-current-a: 30.0;
     in-out property <float> battery-resistance-mohm: 150.0;
     in-out property <string> street-legal-mode: "Unrestricted / Off-Road (Configurable)";
@@ -429,7 +430,7 @@ export component MainWindow inherits Window {
                                     Text {
                                         width: 100%;
                                         height: 100%;
-                                        text: "Built-in firmware includes safe open defaults: Gear-Safe progressive cadence ramp (protects nylon gear below 18 RPM) & Unified Level Ceilings. Tunable via display menus.";
+                                        text: "Built-in firmware includes safe open defaults: Gear-Safe cadence ramp (protects nylon gear below 18 RPM), stock dual-ceiling behavior, and a 4.0V true-zero LVC cushion. Tuning is compiled into the firmware constants.";
                                         font-size: 11px;
                                         color: #77767b;
                                         wrap: word-wrap;
@@ -486,7 +487,7 @@ export component MainWindow inherits Window {
                                         color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : #deddda;
                                     }
                                     Text {
-                                        text: "\{Math.round(root.max-current-a)} A (\{Math.round(root.max-current-a) * 48} W @ 48V)";
+                                        text: "\{Math.round(root.max-current-a)} A (\{Math.round(root.max-current-a) * root.battery-nominal-v} W @ \{root.battery-nominal-v}V)";
                                         font-size: 13px;
                                         font-weight: 600;
                                         color: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ? #77767b : (
@@ -600,7 +601,7 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                         text: root.motor-firmware-source == "Custom .Pack File (Manual Selection)" ?
                                             "Custom .Pack file contains its own fixed current tables, voltage cutoffs, and safety limits." :
-                                            "Continuous thermal rollback (70°C..100°C), 3.0V LVC reserve cushion with True Zero cutoff, and 500ms Hardware Watchdog (IWDG) are automatically active.";
+                                            "Continuous thermal rollback (70°C..100°C), 4.0V LVC true-zero cushion, and 500ms Hardware Watchdog (IWDG) are automatically active.";
                                         font-size: 11px;
                                         color: #77767b;
                                         wrap: word-wrap;
@@ -685,7 +686,7 @@ export component MainWindow inherits Window {
                                             root.selected-motor-port,
                                             true, // dry_run
                                             Math.round(root.max-current-a),
-                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48),
+                                            root.battery-nominal-v,
                                             Math.round(root.battery-resistance-mohm)
                                         );
                                     }
@@ -704,7 +705,7 @@ export component MainWindow inherits Window {
                                             root.selected-motor-port,
                                             false, // live flash
                                             Math.round(root.max-current-a),
-                                            root.battery-voltage == "36V (10S, 42.0V Peak)" ? 36 : (root.battery-voltage == "52V (14S, 58.8V Peak)" ? 52 : 48),
+                                            root.battery-nominal-v,
                                             Math.round(root.battery-resistance-mohm)
                                         );
                                     }

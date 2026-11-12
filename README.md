@@ -33,7 +33,7 @@ An open-source `#![no_std]` Embedded Rust firmware recompilation, display unlock
 
 ---
 
-## What Is Implemented Right Now (`v0.3.0-alpha.9` - Experimental Alpha)
+## What Is Implemented Right Now (Unreleased, post-`v0.3.0-alpha.9` - Experimental Alpha)
 
 Here is the verified functionality available in this repository:
 
@@ -62,10 +62,11 @@ Here is the verified functionality available in this repository:
    - 100% `#![no_std]` embedded Rust implementation of Field Oriented Control (FOC), Clarke/Park transforms, SVPWM duty generation with dead-time margins (6.0% to 94.0%), and PLL Hall velocity/angle observer.
    - Unified multi-target support for both **DM01** (external 12-FET, 30A Sport) and **DM02** (internal 6-FET, 18A Sport), with safe firmware ceilings (32.0 A max for DM01, 20.0 A max for DM02) and active UI/firmware warnings whenever exceeding stock factory ratings (> 30 A on DM01, > 18 A on DM02).
    - Dedicated bare-metal Cortex-M4F binary targets for both motors: `dm01_firmware` and `dm02_firmware`.
-   - **Gear-Safe Progressive Profile (`GearSafeKnee`):** Soft assist (<= 40% at the 18 RPM knee, or <= 30% via display proxy) protecting the blue nylon primary reduction gear against standing-start stomps, ramping to 100% assist at 35 RPM with progressive quadratic response.
-   - **Unified Level Ceilings (`UnifiedLevelCeiling`):** Assist Level 1 strictly respects configured power limits rather than drawing full mode current under heavy pedaling.
-   - **Automatic Dynamic Span Tracking (`AutoSpanTracking`):** Dynamic effort scaling that adapts to resting zero-point thermal drift, allowing riders to reach full assist across all riding temperatures.
-   - **True Zero LVC Cutoff (`TrueZeroCutoff`):** Linear taper down to exact 0.0 A across a 3.0 V reserve window, eliminating sudden BMS cutouts under battery sag.
+   - **Gear-Safe Cadence Ramp:** Compile-time constants keep assist at `<= 40%` below the `18 RPM` knee and ramp to `100%` at `35 RPM`, protecting the blue nylon primary reduction gear against standing-start stomps. The torque response table defaults to linear and can be edited at compile time for progressive or high-sensitivity curves.
+   - **Stock Dual Current Ceilings:** Torque uses the global riding-mode ceiling while PAS and throttle use the assist level's `Pwr%`, matching factory behavior. The live `tune --ceiling 1` update can optionally unify torque to the level ceiling.
+   - **Fixed-Span Thermal Drift Compensation:** The automatic `ZeroVol` tracker follows resting-sensor drift while a fixed `2000 mV` effort span keeps pedal sensitivity consistent across motor temperatures.
+   - **True Zero LVC Cutoff:** Linear taper down to exact 0.0 A across a 4.0 V reserve window, eliminating sudden BMS cutouts under battery sag.
+   - **Automatic Pack Resistance Tracking & 60 s SoC Averaging:** Estimates pack IR from a 10-second voltage/current window (bounded to `10..350 mΩ`), applies EggRider-style sag compensation, and averages the display SoC over 60 seconds. A configured `0 mΩ` disables both compensation and tracking; LVC still evaluates raw terminal voltage. The selected 36/48/52V pack preset is persisted in EEPROM and drives both the SoC curve and LVC.
    - **Universal Sensorless Speed Fallback:** Computes static midpoint gear ratios from drivetrain sprocket teeth. When the physical wheel speed sensor disconnects or loses its magnet, dynamically estimates vehicle speed from cadence to maintain speedometer telemetry and speed governing.
    - **Hardware Safety & Low-Level Drivers:**
      - **Startup Shunt Calibration:** 256-sample synchronous startup calibration to cancel stationary phase current amplifier offset before inverter engagement.
@@ -75,7 +76,7 @@ Here is the verified functionality available in this repository:
      - **Automated Motor Self-Commissioning:** Safe, low-power automated self-commissioning procedure executing rotor alignment, Hall sequence check, electrical angle offset detection, and phase wiring validation.
 
 5. **Physical Simulation & Verification Suite:**
-   - 79 automated unit, integration, and physical simulation tests in `dm01-firmware` (70 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests) plus 11 GUI integration tests (`90` workspace tests total).
+   - 89 automated unit, integration, and physical simulation tests in `dm01-firmware` (80 unit tests, 6 physical simulation scenarios, 3 stock identity roundtrip tests). The desktop GUI is compile-checked with `cargo check` and exercised manually.
    - 6 physical scenario simulations: steep hill takeoff, speed limit soft taper, continuous linear thermal rollback, battery sag / reserve cushion, SVPWM dead-time clamp verification, and hardware safety watchdog latency.
    - **Pre-Flight Sensor Triage (`toseven_pack diagnostic`):** Automated bench checkout evaluating Hall sensor validity, resting torque sensor zero-point drift, throttle idle voltage, and controller/motor thermals prior to applying main battery power.
    - **Live Parameter Tuning (`toseven_pack tune`):** High-speed dynamic parameter injection directly into controller memory over standard display UART, adopting new current and speed limits within <= 1 ms on the very next FOC tick with zero MCU reboot and zero Flash wear.
@@ -119,15 +120,15 @@ Below are concise summaries of core technical solutions addressing community fee
 
 ### 1. Torque Sensor Dynamic Range & Zero-Point Drift
 - **The Issue:** Physical strain gauge deflection during normal hard pedaling produces a signal far below the nominal ceiling, and resting zero-point voltages drift with motor temperature. Stock firmware normalizes against a rigid fixed ceiling, preventing riders from reaching full assist without excessive artificial multipliers.
-- **The DM+ Solution:** Auto-Span Tracking dynamically pins the assist span relative to the tracked resting zero-point. Assist sensitivity remains predictable across thermal drift, allowing riders to achieve full motor assist with natural pedal force.
+- **The DM+ Solution:** The automatic `ZeroVol` tracker follows the resting sensor, and a fixed `2000 mV` effort span keeps assist sensitivity predictable across thermal drift. Riders achieve full motor assist with natural pedal force without re-calibration.
 
 ### 2. Low-Cadence Power Delivery vs. Nylon Primary Gear Protection
 - **The Issue:** Delivering maximum torque at near-zero cadence shears teeth off the internal blue nylon reduction gear during standing-start pedal stomps. Stock firmware protected the gear by penalizing all low-cadence riding with a severe linear ramp, causing riders to stall on steep hills.
-- **The DM+ Solution:** The default **Gear-Safe Progressive Profile** softens assist below 18 RPM to shield the nylon gear, then ramps smoothly to 100% assist at 35 RPM. Full climbing power is unlocked across the active pedaling band (35–110+ RPM) without risking gear failure. An uncapped profile is available for aftermarket metal gear builds.
+- **The DM+ Solution:** The compiled **Gear-Safe Cadence Ramp** softens assist below 18 RPM to shield the nylon gear, then ramps smoothly to 100% assist at 35 RPM. Full climbing power is unlocked across the active pedaling band (35–110+ RPM) without risking gear failure. The cadence knee and full-assist RPM are compile-time constants for advanced builders.
 
 ### 3. Battery Low-Voltage Cutoff (LVC) Cushion & True Zero Cutoff
 - **The Issue:** Stock firmware maintains a residual current floor at low voltage rather than cutting power entirely. Under heavy hill climbing, this remaining draw causes sagging batteries to trip their BMS into sudden, jarring total shutdown.
-- **The DM+ Solution:** True Zero Cutoff smoothly tapers current down to exact 0.0 A across a 3.0 V reserve window above the low-voltage cutoff. Power is completely suppressed at the cutoff threshold, protecting battery cells and preventing unexpected BMS disconnections.
+- **The DM+ Solution:** True Zero Cutoff smoothly tapers current down to exact 0.0 A across a 4.0 V reserve window above the low-voltage cutoff. Power is completely suppressed at the cutoff threshold, protecting battery cells and preventing unexpected BMS disconnections.
 
 ### 4. Drivetrain Kinematics & Sensorless Speed Fallback
 - **The Issue:** In stock firmware, drivetrain tooth count settings have no functional effect, and losing the spoke magnet or wheel sensor cable completely disables display speedometers and speed limiters.
@@ -144,16 +145,16 @@ Below are concise summaries of core technical solutions addressing community fee
 
 | Feature / Subsystem | Stock Factory Firmware | DM+ Open Firmware (`v0.3.0`) | Benefit to Rider / Builder |
 | :--- | :--- | :--- | :--- |
-| **Low-Cadence Climbing Power** | Strict linear scaling; assist cut by 60% at 25 RPM | **Selectable Profiles:** Gear-Safe Progressive (default, <= 40% under 18 RPM, full assist at 35 RPM) or Uncapped Cadence (metal gear only) | More power on steep hill starts without nylon gear damage |
-| **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor ignores assist level `Pwr%` and uses Mode Max | **Unified Level Ceiling Policy:** Assist Level 1 strictly respects configured `Pwr%` limit | Predictable power scaling and battery conservation across assist levels |
-| **Pedal Effort Response** | Rigid linear effort multiplier | **Progressive Quadratic & High-Sensitivity Curves:** Gentle feathering at low pedal effort, progressive boost on steep climbs | Natural trail feel; reduced leg fatigue for urban commuting |
+| **Low-Cadence Climbing Power** | Strict linear scaling; assist cut by 60% at 25 RPM | **Compiled Gear-Safe Ramp:** `<= 40%` under 18 RPM, full assist at 35 RPM | More power on steep hill starts without nylon gear damage |
+| **Torque Assist Ceilings** | Dual-Ceiling Split: Torque sensor ignores assist level `Pwr%` and uses Mode Max | **Stock Dual Ceiling:** Torque uses the mode ceiling; PAS/throttle use `Pwr%`. Live `--ceiling 1` can unify. | Factory-parity behavior with an optional live override |
+| **Pedal Effort Response** | Rigid linear effort multiplier | **Compile-Time Torque Mapping Table:** Linear by default; edit the table for progressive or high-sensitivity curves | Simple source-level tuning without a runtime profile layer |
 | **Takeoff & Standstill Decay** | Susceptible to startup shudder from cold Hall angle estimation | **Direct Physical Hall Sync + 100ms Decay:** Synchronizes to physical Hall pins; decays to zero velocity when stationary | Smooth takeoff without shudder or runaway assist |
 | **Hardware Safety Watchdog** | Inactive or unmonitored during boot hangs | **Independent Hardware Watchdog (IWDG):** Active 500 ms window timer clocked by independent oscillator | Failsafe reboot into safe High-Z shutdown if firmware hangs |
 | **MOSFET Shoot-Through Protection** | Proprietary timing table | **Guaranteed Dead-Time Clamp:** SVPWM duty cycles strictly clamped to 6.0% to 94.0% | Eliminates high-side/low-side FET shoot-through risk under transients |
 | **Emergency Cutoff Latency** | Software-filtered delay | **Instantaneous Shutdown (< 50 ns hardware trip):** Brake lever, backpedaling, Hall fault, or gear shift sensor | Immediate motor disengagement for maximum rider safety |
 | **Thermal Protection** | Sudden cliff or delayed step reduction | **Smooth Continuous Linear Rollback:** Continuous linear derating from 70°C down to 0.0 A at 100°C | Smooth power reduction while cooling without sudden cutouts |
-| **Battery LVC Cushion** | Fixed 3.0V cushion tapering down to 25% current floor | **True Zero Cutoff (TrueZeroCutoff):** Linear taper down to exact 0.0 A at LVC; completely suppresses PWM below LVC | Eliminates abrupt battery BMS shutdowns under heavy hill climbing |
-| **Multi-Voltage Adaptability** | Hardcoded constant-power cap; fixed 48V tuning | **Dynamic Voltage Anchoring & Auto-Detection:** Scales power ceiling relative to nominal pack voltage (36V, 48V, 52V) | Safe operation across all common e-bike battery voltages |
+| **Battery LVC Cushion** | Fixed 3.0V cushion tapering down to 25% current floor | **True Zero Cutoff:** Linear taper down to exact 0.0 A across a 4.0 V reserve window; completely suppresses PWM below LVC | Eliminates abrupt battery BMS shutdowns under heavy hill climbing |
+| **Multi-Voltage Adaptability** | Hardcoded constant-power cap; fixed 48V tuning | **Persisted Pack Preset:** Selects the 36V/48V/52V SoC curve, nominal voltage, and matching LVC; the pack resistance and compliance settings are stored alongside it | Safe operation across all common e-bike battery voltages |
 | **Display Compatibility** | Post-October 2024 menu lockouts prevent modifying settings | **Automated Clean-Room Patcher (`toseven_pack display patch`):** Neutralizes all 6 restriction gates on `T24V`, `T154`, `LCD135C`, `M15`, with live USB flashing or direct `.hex` export | Regain access to `Speed&Power`, current limits, and wheel circumference |
 | **Verification & Flashing Tool** | Windows-only closed-source vendor executables | **Cross-Platform Open CLI (`toseven_pack`) & Desktop GUI:** Flash motor `.Pack` & display `.hex`, auto-detect ports, dry-run simulate, export patched hex | Open, scriptable, cross-platform (macOS/Linux/Windows) flashing and testing |
 
@@ -214,7 +215,7 @@ cargo build --target thumbv7em-none-eabihf --manifest-path dm01-firmware/Cargo.t
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- objcopy target/thumbv7em-none-eabihf/release/dm01_firmware build/dm01_firmware.bin
 
 # Package directly from ELF into official ToSeven .Pack firmware container
-cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack
+cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- create dm01 target/thumbv7em-none-eabihf/release/dm01_firmware build/TO7-DM01-OpenFirmware-v0.3.0.Pack --battery 52
 
 # Cryptographically verify container integrity and bit-exact round-trip
 cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- verify <firmware.Pack>
@@ -284,15 +285,14 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 ├── dm01-firmware/           # Core #![no_std] Rust firmware crate & CLI
 │   ├── src/
 │   │   ├── lib.rs           # Crate root & module exports
-│   │   ├── power_curve.rs   # Exact integer power curve pipeline & arbitration
-│   │   ├── tuning.rs        # Source-level tuning profiles (uncapped cadence, progressive torque)
+│   │   ├── power_curve.rs   # Integer power curve, gear-safe cadence & compile-time tuning constants
 │   │   ├── foc.rs           # Clarke/Park, SVPWM, and PLL Hall observer
 │   │   ├── calibration.rs   # Automated low-power motor self-commissioning state machine
 │   │   ├── config.rs        # MotorConfig, assist levels, drivetrain & compliance rules
 │   │   ├── control.rs       # High-level controller state machine & EN15194 enforcement
 │   │   ├── sensors.rs       # Analog/digital sensor filters & cadence/speed trackers
 │   │   ├── thermal.rs       # NTC thermistor lookup & continuous thermal rollback
-│   │   ├── battery.rs       # 6-point SoC curve, sag filter & LVC reserve cushion
+│   │   ├── battery.rs       # 6-point SoC curve, auto-IR tracking, 60s average & LVC cushion
 │   │   ├── faults.rs        # Official display fault flags & runtime fault detector
 │   │   ├── eeprom.rs        # Flash EEPROM storage manager & CRC-16
 │   │   ├── flasher.rs       # IAP wakeup, header framing, chunk pacing & display ISP
@@ -312,7 +312,7 @@ cargo run --manifest-path dm01-firmware/Cargo.toml --bin toseven_pack -- ports
 │   ├── memory.ld            # Flash and SRAM linker script for bare-metal targets
 │   └── tests/
 │       ├── simulation_suite.rs # 6 end-to-end comparative physical ride scenarios
-│       └── stock_identity.rs   # Bit-exact stock roundtrip & tuning tests
+│       └── stock_identity.rs   # Bit-exact stock roundtrip & compiled behavior tests
 ├── dm-plus-gui/             # DM+ Firmware Studio desktop GUI (Slint)
 │   ├── assets/              # Embedded standalone open firmware .Pack containers
 │   ├── ui/

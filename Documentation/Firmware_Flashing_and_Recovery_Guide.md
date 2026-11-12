@@ -70,7 +70,7 @@ You can flash using either the **DM+ Firmware Studio GUI** or the **`toseven_pac
      - *DM01 Open Firmware v0.3.0 (Built-in)*: Standard open firmware for DM01 external 12-FET.
      - *DM02 Open Firmware v0.3.0 (Built-in)*: Standard open firmware for DM02 internal 6-FET.
      - *Custom .Pack File (Manual Selection)*: Browse to select an official stock release (e.g. `TO7-DM01-K260521A-V6510C.Pack` or an older stock `.Pack`).
-   - If using built-in firmware, select your tuning profile (e.g., *Gear-Safe Progressive*) and battery nominal pack. (Note: These options automatically disable if a custom `.Pack` is selected, as custom files have hardcoded limits).
+   - If using built-in firmware, select the battery nominal pack and compliance mode. The pack preset is persisted in EEPROM and selects both the SoC curve and the matching LVC (31.5V / 41.0V / 44.1V). CLI builds can use `toseven_pack create ... --battery 36|48|52`. Power-curve tuning (gear-safe cadence, torque mapping, ceilings, LVC cushion) is compiled into the firmware constants, not selected at flash time. (Note: these options automatically disable if a custom `.Pack` is selected, as custom files have hardcoded limits).
 3. **Verify:** Click **Test Flash (Dry Run)** to validate packet framing, container checksums, and vector tables without touching hardware.
 4. **Flash:** Click **Flash Firmware**. The flasher executes the automated 5-step IAP engine:
    - **Step 1 (Wakeup):** Transmits the 21-byte encrypted wakeup packet (`0xC9, 0x77` masked with `0x69` cipher) at 9600 Baud with high/low nibble `UartMask` distribution (bytes 12-13) and hardware DTR reset pulse fallback to wake running application controllers into bootloader mode.

@@ -1,13 +1,14 @@
 //! Verifies that official stock .Pack containers reproduce bit-for-bit when repacked,
-//! and that source-level tuning profiles produce correct motor control responses.
+//! and that the compiled power-curve constants produce the intended gear-safe behavior.
 
 use dm01_firmware::pack::{
     decrypt_payload, parse_pack_metadata, repack_firmware, MotorTarget, PACK_FILE_SIZE,
 };
-use dm01_firmware::power_curve::TorqueSensorState;
+use dm01_firmware::power_curve::{
+    cadence_multiplier_q8, TorqueSensorState, TORQUE_USES_LEVEL_CEILING,
+};
 use dm01_firmware::sha256::sha256;
 use dm01_firmware::stock;
-use dm01_firmware::tuning::TuningProfile;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -86,176 +87,49 @@ fn stock_is_registered_and_round_trips_bit_identical() {
 }
 
 #[test]
-fn test_source_level_tuning_customizations() {
-    let mut torque_stock = TorqueSensorState::new(750, 3000, 50);
-    let mut torque_uncapped = TorqueSensorState::new(750, 3000, 50);
+fn test_compiled_constants_are_gear_safe_and_dual_ceiling() {
+    let mut torque = TorqueSensorState::new(750, 3000, 50);
 
-    // Simulate riding at 25 RPM (climbing a steep grade with 1.8V strain gauge force)
-    let pedal_mv = 1800;
-    let cadence_rpm = 25;
-    let strength_value = 10;
-    let eassist_pct = 100;
-    let mode_max_da = 300; // 30.0 A
-    let global_ceiling_da = 300;
-    let level_ceiling_da = 200; // Assist level 3 is 20A
+    let full_at_35 = torque.compute_current_da(3000, 35, 0, 10, 100, 5, 300, 300, 200);
+    let protected_at_10 = torque.compute_current_da(3000, 10, 0, 10, 100, 5, 300, 300, 200);
 
-    let stock_profile = TuningProfile::stock_v6510c();
-    let uncapped_profile = TuningProfile::uncapped_cadence();
-    let commuter_profile = TuningProfile::commuter_comfort();
-
-    let stock_out = torque_stock.compute_current_da_with_profile(
-        pedal_mv,
-        cadence_rpm,
-        1,
-        strength_value,
-        eassist_pct,
-        5,
-        mode_max_da,
-        global_ceiling_da,
-        level_ceiling_da,
-        &stock_profile,
-    );
-
-    let uncapped_out = torque_uncapped.compute_current_da_with_profile(
-        pedal_mv,
-        cadence_rpm,
-        1,
-        strength_value,
-        eassist_pct,
-        5,
-        mode_max_da,
-        global_ceiling_da,
-        level_ceiling_da,
-        &uncapped_profile,
-    );
-
-    let mut torque_commuter = TorqueSensorState::new(750, 3000, 50);
-    let commuter_out = torque_commuter.compute_current_da_with_profile(
-        pedal_mv,
-        cadence_rpm,
-        1,
-        strength_value,
-        eassist_pct,
-        5,
-        mode_max_da,
-        global_ceiling_da,
-        level_ceiling_da,
-        &commuter_profile,
-    );
-
-    // In stock, 25 RPM scales current down: 25 / 60 = ~41% of full power
-    // With uncapped cadence, 25 RPM receives full 100% torque assist!
     assert!(
-        uncapped_out > stock_out,
-        "Uncapped profile must deliver more power at low cadence than stock"
+        protected_at_10 < full_at_35,
+        "Gear-safe knee must reduce current at 10 RPM"
+    );
+    assert_eq!(
+        cadence_multiplier_q8(35),
+        256,
+        "35 RPM must reach full cadence assist"
     );
 
-    // In commuter profile with UnifiedLevelCeiling, current must not exceed level_ceiling_da (200 dA = 20A)
-    assert!(
-        commuter_out <= level_ceiling_da,
-        "Commuter profile with unified ceiling must respect assist level ceiling"
-    );
+    if TORQUE_USES_LEVEL_CEILING {
+        assert_eq!(
+            full_at_35, 200,
+            "Unified ceiling must clamp torque to the level ceiling"
+        );
+    } else {
+        assert_eq!(
+            full_at_35, 300,
+            "Stock dual ceiling must let torque use the global mode ceiling"
+        );
+    }
 }
 
 #[test]
-fn test_gear_safe_nylon_protection_vs_uncapped_stall_torque() {
-    let mut torque_stock = TorqueSensorState::new(750, 3000, 50);
-    let mut torque_gearsafe = TorqueSensorState::new(750, 3000, 50);
-    let mut torque_uncapped = TorqueSensorState::new(750, 3000, 50);
+fn test_gear_safe_knee_limits_low_cadence_torque() {
+    let mut torque = TorqueSensorState::new(750, 3000, 50);
 
-    let stock_profile = TuningProfile::stock_v6510c();
-    let gearsafe_profile = TuningProfile::gear_safe_trail();
-    let uncapped_profile = TuningProfile::uncapped_cadence();
+    let at_10 = torque.compute_current_da(3000, 10, 0, 10, 100, 5, 300, 300, 300);
+    let at_18 = torque.compute_current_da(3000, 18, 0, 10, 100, 5, 300, 300, 300);
+    let at_35 = torque.compute_current_da(3000, 35, 0, 10, 100, 5, 300, 300, 300);
 
-    let pedal_mv = 3000;
-    let strength = 10;
-    let eassist = 100;
-    let mode_max = 300; // 30A Sport
-    let global_ceil = 300;
-    let level_ceil = 300;
-
-    // At 10 RPM (low-speed hill climbing):
-    // Uncapped delivers 100% torque assist (300 dA = 30.0 A), creating massive stall torque that
-    // can strip the factory blue nylon reduction gear.
-    // Gear-safe profile provides a gentle, protected assist floor (~20-40%), preventing gear tooth fracture!
-    let uncapped_10 = torque_uncapped.compute_current_da_with_profile(
-        pedal_mv,
-        10,
-        0,
-        strength,
-        eassist,
-        5,
-        mode_max,
-        global_ceil,
-        level_ceil,
-        &uncapped_profile,
-    );
-    let gearsafe_10 = torque_gearsafe.compute_current_da_with_profile(
-        pedal_mv,
-        10,
-        0,
-        strength,
-        eassist,
-        5,
-        mode_max,
-        global_ceil,
-        level_ceil,
-        &gearsafe_profile,
-    );
-    let stock_10 = torque_stock.compute_current_da_with_profile(
-        pedal_mv,
-        10,
-        0,
-        strength,
-        eassist,
-        5,
-        mode_max,
-        global_ceil,
-        level_ceil,
-        &stock_profile,
-    );
-
-    assert_eq!(uncapped_10, 300, "Uncapped delivers full current at 10 RPM");
+    assert!(at_10 > 0, "Gear-safe knee still provides gentle assist");
     assert!(
-        gearsafe_10 < uncapped_10,
-        "Gear-safe profile must significantly reduce current at 10 RPM to protect nylon gears"
+        at_10 < at_18 && at_18 < at_35,
+        "Current must ramp monotonically from the knee to full assist"
     );
-    assert!(
-        gearsafe_10 >= stock_10,
-        "Gear-safe profile still maintains adequate climbing assistance"
-    );
-
-    // At 35 RPM: Gear-safe profile ramps to full 100% assist, outperforming sluggish stock 60 RPM curve
-    let gearsafe_35 = torque_gearsafe.compute_current_da_with_profile(
-        pedal_mv,
-        35,
-        0,
-        strength,
-        eassist,
-        5,
-        mode_max,
-        global_ceil,
-        level_ceil,
-        &gearsafe_profile,
-    );
-    let stock_35 = torque_stock.compute_current_da_with_profile(
-        pedal_mv,
-        35,
-        0,
-        strength,
-        eassist,
-        5,
-        mode_max,
-        global_ceil,
-        level_ceil,
-        &stock_profile,
-    );
-    assert_eq!(
-        gearsafe_35, 300,
-        "Gear-safe profile reaches 100% assist by 35 RPM"
-    );
-    assert!(
-        gearsafe_35 > stock_35,
-        "Gear-safe profile provides more assistance than stock at 35 RPM (35/60 = 58%)"
-    );
+    assert_eq!(cadence_multiplier_q8(10), 54);
+    assert_eq!(cadence_multiplier_q8(18), 102);
+    assert_eq!(cadence_multiplier_q8(35), 256);
 }

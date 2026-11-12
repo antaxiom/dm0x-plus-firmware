@@ -3,6 +3,7 @@
 //! Defines the complete configuration parameters for ToSeven DM01 (`TS1000W`) and DM02 (`TS500W`)
 //! mid-drive motors and DM0X displays (`T24`, `T154`, `M15`, `LCD135C`).
 
+use crate::battery::BatteryPreset;
 use crate::eeprom::EepromImage;
 
 /// Maximum number of configurable assist levels supported by the display/controller (`1..=8`).
@@ -300,6 +301,9 @@ pub struct MotorConfig {
     /// Battery internal pack resistance in milliohms for EggRider-grade voltage sag compensation (default: `150 mΩ`).
     /// If 0, dynamic sag compensation is disabled.
     pub battery_resistance_mohm: u16,
+
+    /// Battery nominal pack preset used for the SoC curve and LVC (default: `48V`).
+    pub battery_preset: BatteryPreset,
 }
 
 impl Default for MotorConfig {
@@ -431,6 +435,7 @@ impl MotorConfig {
                 crate::eeprom::StreetLegalMode::Unrestricted
             },
             battery_resistance_mohm: 150,
+            battery_preset: BatteryPreset::V48,
         }
     }
 
@@ -487,13 +492,25 @@ impl MotorConfig {
         }
         self.speed_sensor_fail_unlimit = eeprom.speed_sensor_fail_unlimit();
         if let Some(custom) = eeprom.custom_config() {
-            if cfg!(feature = "street_legal_lock") {
-                self.street_legal_mode = crate::eeprom::StreetLegalMode::PermanentLock;
-            } else {
-                self.street_legal_mode = custom.street_legal_mode;
-            }
-            self.battery_resistance_mohm = custom.battery_resistance_mohm;
+            self.apply_custom_config(&custom);
         }
+    }
+
+    /// Applies the DM+ custom configuration (compliance latch, pack resistance, and battery preset).
+    ///
+    /// The embedded firmware image is authoritative for these flash-time settings: the boot path
+    /// applies it after the Page 127 image so a reflash with a new battery preset cannot be masked
+    /// by a stale custom config left in the controller's EEPROM.
+    pub fn apply_custom_config(&mut self, custom: &crate::eeprom::DmPlusCustomConfig) {
+        if cfg!(feature = "street_legal_lock") {
+            self.street_legal_mode = crate::eeprom::StreetLegalMode::PermanentLock;
+        } else {
+            self.street_legal_mode = custom.street_legal_mode;
+        }
+        self.battery_resistance_mohm = custom.battery_resistance_mohm;
+        self.battery_preset = custom.battery_preset;
+        self.nominal_voltage_mv = custom.battery_preset.nominal_voltage_mv();
+        self.low_cut_voltage_mv = custom.battery_preset.low_cut_voltage_mv();
     }
 
     /// Returns true if the controller is locked to European EN15194 / EPAC street-legal limits
@@ -503,56 +520,6 @@ impl MotorConfig {
     pub fn is_street_legal_locked(&self) -> bool {
         cfg!(feature = "street_legal_lock")
             || self.street_legal_mode == crate::eeprom::StreetLegalMode::PermanentLock
-    }
-
-    /// Dynamically derives the active [`TuningProfile`] from display menu proxy settings.
-    /// Leaves `throttle_control_mode` (0..12) completely decoupled and untouched!
-    pub fn derive_tuning_profile(&self) -> crate::tuning::TuningProfile {
-        let cadence_scaling = match self.torque_strength_value {
-            1..=3 => crate::tuning::CadenceScaling::LinearRamp {
-                ramp_start_rpm: 5,
-                target_rpm: 50,
-            },
-            7..=8 => crate::tuning::CadenceScaling::GearSafeKnee {
-                min_cadence_rpm: 5,
-                protect_knee_rpm: 18,
-                protect_limit_q8: 77, // ~30%
-                target_rpm: 35,
-            },
-            9..=10 => crate::tuning::CadenceScaling::Uncapped { min_cadence_rpm: 5 },
-            _ => crate::tuning::CadenceScaling::GearSafeKnee {
-                min_cadence_rpm: 5,
-                protect_knee_rpm: 18,
-                protect_limit_q8: 77, // ~30%
-                target_rpm: 35,
-            }, // 4..=6 default: GearSafe
-        };
-
-        let torque_response = match self.torque_filter {
-            5..=7 => crate::tuning::TorqueResponse::Progressive,
-            8..=10 => crate::tuning::TorqueResponse::HighSensitivity,
-            _ => crate::tuning::TorqueResponse::StockLinear,
-        };
-
-        let ceiling_policy = if self.speed_sensor_fail_unlimit {
-            crate::tuning::AssistCeilingPolicy::StockDualCeiling
-        } else {
-            crate::tuning::AssistCeilingPolicy::UnifiedLevelCeiling
-        };
-
-        crate::tuning::TuningProfile {
-            name: "DisplayMappedProfile",
-            cadence_scaling,
-            torque_response,
-            ceiling_policy,
-            span_policy: crate::tuning::TorqueSpanPolicy::AutoSpanTracking {
-                nominal_span_mv: 2300,
-            },
-            lvc_policy: crate::tuning::LvcCushionPolicy::TrueZeroCutoff { cushion_dv: 30 },
-            speed_soft_taper_window_0_1_kph: 15,
-            thermal_rollback_start_c: 70,
-            thermal_rollback_cutoff_c: 100,
-        }
     }
 
     /// Computes the midpoint gear ratio in fixed-point Q8 (256 = 1.0) from configured sprockets:
@@ -732,5 +699,22 @@ mod tests {
                                            // At 48V (<= 50V), it must never exceed 32.0 A
         let limited = cfg.mode_current_limit_ma(RidingMode::Sport, 48_000);
         assert_eq!(limited, 32_000);
+    }
+
+    #[test]
+    fn test_apply_eeprom_custom_battery_preset() {
+        let mut eeprom = crate::eeprom::EepromImage::default_dm01();
+        eeprom.set_custom_config(&crate::eeprom::DmPlusCustomConfig {
+            street_legal_mode: crate::eeprom::StreetLegalMode::Unrestricted,
+            battery_resistance_mohm: 150,
+            battery_preset: BatteryPreset::V52,
+        });
+
+        let mut cfg = MotorConfig::default_dm01();
+        cfg.apply_eeprom_image(&eeprom);
+
+        assert_eq!(cfg.battery_preset, BatteryPreset::V52);
+        assert_eq!(cfg.nominal_voltage_mv, 52_000);
+        assert_eq!(cfg.low_cut_voltage_mv, 44_100);
     }
 }

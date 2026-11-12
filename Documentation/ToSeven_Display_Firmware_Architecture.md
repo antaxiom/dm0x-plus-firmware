@@ -263,48 +263,40 @@ The architectural foundation is established for a cross-platform desktop graphic
 
 ---
 
-## 9. Handlebar-Configurable Custom Tuning & Menu Proxy Architecture
+## 9. Display Menu Settings & Compile-Time Tuning Architecture
 
-To allow riders to switch Open Firmware features on the trail without requiring a PC, serial cable, or firmware reflash, DM+ Open Firmware introduces an **autonomous display proxy and button-combo engine**.
+Open Firmware tuning is compiled into the firmware constants. Display menus still control their original factory functions, but they do **not** switch tuning profiles at runtime.
 
 ### 9.1 Complete Decoupling of Throttle Functionality (Modes 0 to 12 Preserved)
 Riders retain **100% independent control over throttle behavior**. All 13 decompiled factory throttle modes (0 to 12) function as originally engineered (e.g. Mode 0 = strict EU 6 km/h walk, Mode 1 = assist-level matched, Mode 2 = override, Mode 8 = full-full, Mode 12 = scooter).
 
-### 9.2 Display Menu Proxies for Open Firmware Features
-Rather than colliding with throttle modes, custom open firmware features are mapped to natural, existing display settings:
+### 9.2 Display Menu Settings (No Runtime Profile Switching)
 
 | Display Menu Setting | Display Range | Open Firmware Behavior |
 | :--- | :--- | :--- |
-| **`StrengthValue`** (Pedal Effort) | `1..10` | • **`1..3`:** Commuter Comfort (soft launch, high cadence assist)<br>• **`4..6`:** **Gear-Safe Progressive** (Default: protects nylon gear below 18 RPM)<br>• **`7..8`:** Progressive Trail (quadratic effort curve for gravel/roots)<br>• **`9..10`:** Uncapped Cadence (full climbing torque above 5 RPM; for metal gears) |
-| **`SpeedSensorFail`** | `0` (Unlimit) / `1` (Limit) | • **`0 (Unlimit)`:** **Stock Dual-Ceiling Policy** (Torque uses full Mode Current, ignoring `Pwr%`)<br>• **`1 (Limit)`:** **Unified Level Ceiling Policy** (Torque strictly respects the assist level's `Pwr%` limit) |
-| **`Filter`** (Torque Filter) | `1..10` | • **`1..4`:** Linear torque response with light/medium smoothing<br>• **`5..7`:** Progressive quadratic torque curve<br>• **`8..10`:** High-sensitivity commuter boost |
-| **`StartSpeed(rpm)`** | `0..30` RPM | • **`18`:** Sets nylon reduction gear protection knee to 18 RPM<br>• **`0`:** Disables nylon gear protection for all-metal gear sets |
+| **`StrengthValue`** (Pedal Effort) | `1..10` | Scales `StrengthValue` in the effort multiplier (`min(3 * StrengthValue, 30)`). It does not switch cadence or torque profiles. |
+| **`Filter`** (Torque Filter) | `1..10` | Sets the IIR pedal smoothing coefficient (`F = min(20 * Filter, 200)`). |
+| **`SpeedSensorFail`** | `0` (Unlimit) / `1` (Limit) | Allows the sensorless speed fallback to bypass the speed limit when `0`, subject to the street-legal lock. It does not change the ceiling policy. |
+| **`StartSpeed(rpm)`** | `0..30` RPM | Reserved for display compatibility. The nylon-gear knee is the compile-time `CADENCE_KNEE_RPM` constant (18 RPM by default). |
 
-### 9.3 Handlebar Button Hold Combinations (No Menus Needed!)
+### 9.3 Handlebar Button Hold Combinations
 Because displays stream live button states over UART in `DisplayCommandFrame`, the controller monitors button holds while stationary (`0.0 km/h`):
-* **Hold Walk Assist (-) + Up (+) for 2 Seconds at Standstill:**
-  Cycles through Tuning Profiles sequentially:
-  1. *1 Confirmation Blip:* **Gear-Safe Progressive** (Nylon reduction gear protection active)
-  2. *2 Blips:* **Progressive Trail** (Quadratic trail modulation)
-  3. *3 Blips:* **Uncapped Cadence** (Technical hill climb, for metal gears)
-  4. *4 Blips:* **Commuter Comfort** (Gentle launch, high cadence sensitivity)
-  5. *5 Blips:* **Stock V6510C** (Factory stock linear ramp)
-  *Automatically saved to Flash Page 127 EEPROM so the setting survives power cycles.*
 * **Hold Brake Lever + Power-On at Startup:** In `StreetLegalDefault` mode, holding the brake lever while pressing Power-On temporarily disengages the 25.0 km/h / 250W limiter for that ride (engaging Off-Road mode). When `PermanentLock` is set (or compiled with `--features street_legal_lock`), this boot combo is completely locked out and ignored.
 
 ### 9.4 Reserve EEPROM Storage (`DmPlusCustomConfig` at `0x04A..0x05A`)
-The controller stores its custom state inside the 16 contiguous zero-padded reserve bytes discovered at `0x04A..0x05A` in Block 1 of the Flash EEPROM image:
+The controller stores its persistent custom state inside the 16 contiguous zero-padded reserve bytes discovered at `0x04A..0x05A` in Block 1 of the Flash EEPROM image. Bytes `off+2..off+7` and `off+11..off+16` are reserved and zeroed:
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmPlusCustomConfig {
-    pub tuning_profile: u8,           // 0: Stock, 1: GearSafe, 2: Uncapped, 3: Trail, 4: Commuter
-    pub ceiling_policy: u8,           // 0: StockDualCeiling, 1: UnifiedLevelCeiling
-    pub nylon_gear_knee_rpm: u8,      // Knee cadence threshold (default: 18 RPM)
-    pub lvc_cushion_deci_v: u8,       // Linear LVC reserve window (default: 30 = 3.0V)
-    pub thermal_rollback_start_c: u8, // Linear rollback start temperature (default: 70°C)
-    pub street_legal_mode: StreetLegalMode, // 0: Unrestricted, 1: Default, 2: PermanentLock
+    // off+0..off+2: magic
+    // off+2..off+7: reserved (zero)
+    pub street_legal_mode: StreetLegalMode, // off+7: 0 Unrestricted, 1 Default, 2 PermanentLock
+    pub battery_resistance_mohm: u16,       // off+8..off+10: default 150 mΩ, 0 disables IR compensation
+    pub battery_preset: BatteryPreset,      // off+10: 0 48V (default), 1 36V, 2 52V, 3 60V, 4 72V, 5 Custom
+    // off+11..off+16: reserved (zero)
 }
 ```
+Cadence, torque mapping, ceiling selection, LVC cushion, and thermal limits live in [`power_curve.rs`](../dm01-firmware/src/power_curve.rs) and [`config.rs`](../dm01-firmware/src/config.rs) at compile time.
 
 ---
 

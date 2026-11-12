@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added *Battery Sag Compensation (IR)* slider (0–350 mΩ) to the DM+ Desktop Studio (`dm-plus-gui`), enabling flash-time EEPROM configuration and automated container checksum updates.
   - Embedded factory EEPROM images directly into bare-metal `dm01_firmware` and `dm02_firmware` Flash payloads, enabling automated self-commissioning on blank or unformatted MCU Flash Page 127.
 
+### Changed
+- **Battery IR Tracking & 60-Second SoC Averaging:**
+  - Replaced the fixed `1.02 s` IR-compensated EMA with a bounded automatic pack-resistance estimator. It samples voltage/current every 100 ms into a 10-second window, estimates `R = ΔV / ΔI` from low (`<= 2 A`) and high (`>= 8 A`) current bins, clamps to `[10, 350] mΩ`, and applies a 3/4 EMA once per second.
+  - A configured `0 mΩ` now disables both IR compensation and automatic tracking, preserving the documented disable behavior. The estimator never re-enables a deliberately disabled pack resistance.
+  - The IR-compensated open-circuit voltage is averaged over a 60-sample (60-second) boxcar before SoC evaluation. The window is stored as `u16` samples, using about half the RAM of the contributed `u32` implementation. LVC still evaluates raw terminal voltage.
+  - Added tests for estimator convergence, the 350 mΩ clamp, the `0 mΩ` disable path, the 60-second average, and the fixed-resistance IR compensation path.
+- **Battery Preset Persistence:**
+  - Added `BatteryPreset` to `DmPlusCustomConfig` at EEPROM Block 1 `0x04A + 10`, with `0` remaining the 48V default for backward compatibility.
+  - The GUI's 36/48/52V pack selection is now written into the embedded EEPROM image at flash time. At boot, `MotorConfig::apply_eeprom_image` restores the preset, sets `nominal_voltage_mv`, and sets the matching `low_cut_voltage_mv` (31.5V / 41.0V / 44.1V), and `BatteryMonitor` uses the restored preset instead of a hardcoded `BatteryPreset::V48`.
+  - Added `toseven_pack create ... --battery 36|48|52` for CLI builds, and `toseven_pack info` now prints the persisted DM+ custom config (preset, nominal/LVC, resistance, compliance).
+  - The GUI watt estimate now follows the selected pack voltage instead of always using 48V.
+  - The embedded firmware image is authoritative for flash-time DM+ custom settings, so reflashing with a new preset cannot be masked by a stale Page 127 custom config.
+  - Added EEPROM roundtrip, preset-encoding, and boot-config tests.
+- **Compile-Time Power-Curve Tuning Replaces Runtime Profiles:**
+  - Removed the `TuningProfile`, `CadenceScaling`, `TorqueResponse`, `AssistCeilingPolicy`, `TorqueSpanPolicy`, and `LvcCushionPolicy` layer and deleted `src/tuning.rs`.
+  - Tuning now lives in `power_curve.rs` constants: `TORQUE_MAPPING_TABLE`, `TORQUE_SENSOR_SPAN_MV`, `CADENCE_MIN_RPM`, `CADENCE_KNEE_RPM`, `CADENCE_KNEE_LIMIT_Q8`, `CADENCE_FULL_RPM`, `ZERO_VOL_QUIET_TICKS`, `TORQUE_USES_LEVEL_CEILING`, `SPEED_SOFT_TAPER_WINDOW_DECI_KPH`, `LVC_CUSHION_FLOOR_PERCENT`, and `LVC_CUSHION_WINDOW_DV`.
+  - Retained the gear-safe cadence ramp (`<= 40%` below 18 RPM, 100% at 35+ RPM) and a 4.0 V true-zero LVC cushion. Switched torque response to the default linear mapping table and restored the stock dual-ceiling split (`TORQUE_USES_LEVEL_CEILING = false`).
+  - Thermal rollback now reads the configured `temp_ctl_min_c`/`temp_ctl_max_c` limits directly (70°C..100°C by default) instead of profile overrides. The normal speed soft-taper is the stock `1.5 km/h` window, and the torque effort span is fixed at `2000 mV`.
+  - The live `toseven_pack tune --ceiling 0|1` packet still works through a simple controller boolean; it is no longer a tuning profile.
+- **Simulation and Documentation:** Updated the hill-climb and LVC simulation scenarios for the compiled gear-safe ramp and 4.0 V true-zero cushion, and refreshed `README.md`, `AGENTS.md`, the power-curve guide, the display architecture guide, the forensic gap analysis, and the GUI compliance text.
+
+### Removed
+- Removed unused `apply_true_zero_lvc_cushion_da`, `apply_lvc_cushion_with_policy_da`, and the stock 25% `apply_lvc_cushion_da` duplicate. A single constant-driven `apply_lvc_cushion_da` now handles the configurable floor and window.
+- Removed the dead `tuning_profile`, `ceiling_policy`, `nylon_gear_knee_rpm`, `lvc_cushion_deci_v`, and `thermal_rollback_start_c` fields from `DmPlusCustomConfig`. Their EEPROM bytes remain reserved and are zeroed on write.
 
 ## [v0.3.0-alpha.9] - 2026-10-25
 

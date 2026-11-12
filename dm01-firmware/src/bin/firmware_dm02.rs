@@ -4,7 +4,7 @@
 
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
-use dm01_firmware::battery::{BatteryMonitor, BatteryPreset};
+use dm01_firmware::battery::BatteryMonitor;
 use dm01_firmware::config::{AssistSelection, MotorConfig};
 use dm01_firmware::control::Dm01Controller;
 use dm01_firmware::faults::{FaultDetector, FaultFlags};
@@ -144,36 +144,27 @@ pub unsafe extern "C" fn Reset_Handler() -> ! {
 
     // 6. Initialize DM02 Motor Controller State Machine (load from Flash Page 127 if available)
     let mut config = MotorConfig::default_dm02();
-    let flash_img = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() };
-    if let Some(ref img) = flash_img {
-        config.apply_eeprom_image(img);
+    if let Some(img) = unsafe { dm01_firmware::eeprom::EepromImage::read_from_flash() } {
+        config.apply_eeprom_image(&img);
     } else {
         config.apply_eeprom_image(&DEFAULT_EEPROM_IMAGE);
     }
-    // If Flash Page 127 does not contain custom DM+ config, inherit from embedded image
-    if flash_img
-        .as_ref()
-        .and_then(|img| img.custom_config())
-        .is_none()
-    {
-        if let Some(custom) = DEFAULT_EEPROM_IMAGE.custom_config() {
-            config.battery_resistance_mohm = custom.battery_resistance_mohm;
-            config.street_legal_mode = custom.street_legal_mode;
-        }
+    // The embedded firmware image is authoritative for flash-time DM+ custom settings
+    // (compliance, pack resistance, battery preset). Applying it after Page 127 ensures a
+    // reflash with a new battery preset is not masked by a stale custom config.
+    if let Some(custom) = DEFAULT_EEPROM_IMAGE.custom_config() {
+        config.apply_custom_config(&custom);
     }
     sensors.configure_from_motor_config(&config);
     let angle_offset_deg = config.motor_hw.angle_offset_deg;
     let foc_cfg = config.foc_config;
     let mut battery_monitor = BatteryMonitor::with_resistance(
-        BatteryPreset::V48,
+        config.battery_preset,
         config.nominal_voltage_mv,
         config.battery_resistance_mohm,
     );
     let mut fault_detector = FaultDetector::new();
-    let mut controller = Dm01Controller::with_tuning(
-        config,
-        dm01_firmware::tuning::TuningProfile::gear_safe_trail(),
-    );
+    let mut controller = Dm01Controller::new(config);
     let mut observer = HallPllObserver::new();
     let mut foc = FocCurrentLoop::new(Dm01PwmHardware::DEFAULT_ARR);
     foc.configure_from_foc_menu(&foc_cfg);
